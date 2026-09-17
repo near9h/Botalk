@@ -1,0 +1,83 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: botgroup-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-botgroup}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-botgroup}
+      POSTGRES_DB: ${POSTGRES_DB:-botgroup}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-botgroup} -d ${POSTGRES_DB:-botgroup}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: botgroup-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-botgroup}:${POSTGRES_PASSWORD:-botgroup}@postgres:5432/${POSTGRES_DB:-botgroup}
+      NEWAPI_BASE_URL: ${NEWAPI_BASE_URL}
+      NEWAPI_API_KEY: ${NEWAPI_API_KEY}
+      MINERU_API_KEY: ${MINERU_API_KEY:-}
+      MINERU_MODEL_VERSION: ${MINERU_MODEL_VERSION:-vlm}
+      UPLOAD_DIR: /data/uploads
+      AUTH_SECRET: ${AUTH_SECRET:-change-me-please-use-a-long-random-string}
+      AUTH_BOOTSTRAP_USER: ${AUTH_BOOTSTRAP_USER:-admin}
+      AUTH_BOOTSTRAP_PASSWORD: ${AUTH_BOOTSTRAP_PASSWORD:-admin}
+      AUTH_DISABLED: ${AUTH_DISABLED:-false}
+    expose:
+      - "8000"   # Only reachable via the nginx reverse proxy.
+    volumes:
+      - ./data/uploads:/data/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: botgroup-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      PORT: ${FRONTEND_INTERNAL_PORT:-3000}
+      HOSTNAME: 0.0.0.0
+    expose:
+      - "3000"   # Only reachable via the nginx reverse proxy.
+
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: botgroup-nginx
+    restart: unless-stopped
+    depends_on:
+      - frontend
+      - backend
+    ports:
+      - "${NGINX_PORT:-3500}:3500"
+      # Dedicated public upload port. Only /api/attachments is served here;
+      # everything else 404s. Override via env (e.g. UPLOAD_PORT=5050) or
+      # comment this line out to disable the public upload endpoint.
+      - "${UPLOAD_PORT:-5050}:5050"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3500/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

@@ -1,0 +1,285 @@
+/* =========================================================================
+   BotGroup — Design System
+   Inspired by Singapore-style minimalism: light, glassy, gentle accents.
+   ========================================================================= */
+
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  /* ─── Color tokens ─── */
+  --bg: #FAFAF9;
+  --bg-gradient: radial-gradient(
+      1200px 800px at 0% 0%,
+      rgba(167, 139, 250, 0.10) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      900px 600px at 100% 100%,
+      rgba(147, 197, 253, 0.10) 0%,
+      transparent 60%
+    ),
+    #FAFAF9;
+
+  --surface: rgba(255, 255, 255, 0.72);
+  --surface-2: rgba(255, 255, 255, 0.92);
+  --surface-solid: #FFFFFF;
+  --border: rgba(15, 23, 42, 0.07);
+  --border-strong: rgba(15, 23, 42, 0.12);
+
+  --fg: #1F2937;
+  --fg-muted: #6B7280;
+  --fg-subtle: #9CA3AF;
+  --fg-on-accent: #FFFFFF;
+
+  /* Accents — soft Singapore pastel palette */
+  --accent: #A78BFA;          /* lavender — primary */
+  --accent-hover: #8B5CF6;
+  --accent-2: #93C5FD;        /* sky — info */
+  --accent-3: #86EFAC;        /* mint — success */
+  --accent-4: #FDA4AF;        /* peach — user */
+  --accent-5: #FCD34D;        /* warm yellow — warning */
+
+  --danger: #F87171;
+  --danger-bg: #FEF2F2;
+
+  /* Model vendor palette */
+  --vendor-openai: #10B981;
+  --vendor-anthropic: #D97706;
+  --vendor-google: #4285F4;
+  --vendor-zhipu: #6366F1;
+  --vendor-alibaba: #FF6A00;
+  --vendor-deepseek: #1E40AF;
+  --vendor-bytedance: #2563EB;
+  --vendor-moonshot: #0EA5E9;
+  --vendor-baidu: #DC2626;
+  --vendor-minimax: #DB2777;
+  --vendor-other: #6B7280;
+
+  /* Shape & motion */
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-full: 999px;
+
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.04);
+  --shadow: 0 8px 30px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 20px 60px rgba(15, 23, 42, 0.10);
+
+  --transition: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Spacing scale */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+}
+
+/* ─── Reset ─── */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--fg);
+  background: var(--bg-gradient);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+a { color: inherit; text-decoration: none; }
+button { font: inherit; cursor: pointer; border: none; background: none; }
+input, textarea, select { font: inherit; color: inherit; }
+h1, h2, h3, h4, h5 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+p { margin: 0; }
+ul { list-style: none; padding: 0; margin: 0; }
+
+/* ─── Glass utilities ─── */
+.glass {
+  background: var(--surface);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+.glass-strong {
+  background: var(--surface-2);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+/* ─── Animations ─── */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.6); }
+  70% { box-shadow: 0 0 0 10px rgba(167, 139, 250, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(167, 139, 250, 0); }
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
+.animate-fade-in { animation: fade-in 250ms ease-out both; }
+.animate-slide-up { animation: slide-up 350ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-scale-in { animation: scale-in 200ms ease-out both; }
+.animate-pulse-ring { animation: pulse-ring 1.6s infinite; }
+
+/* ─── Scrollbar ─── */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.12);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgba(15, 23, 42, 0.22); background-clip: content-box; }
+
+/* ─── Markdown body (chat bubbles) ─── */
+.md-body {
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--fg);
+}
+.md-body > *:first-child { margin-top: 0 !important; }
+.md-body > *:last-child { margin-bottom: 0 !important; }
+.md-body p { margin: 6px 0; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 {
+  margin: 10px 0 4px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+.md-body h1 { font-size: 17px; }
+.md-body h2 { font-size: 15px; }
+.md-body h3 { font-size: 13.5px; color: var(--fg-muted); }
+.md-body h4 { font-size: 13px; color: var(--fg-muted); }
+.md-body ul, .md-body ol {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+.md-body ul { list-style: disc; }
+.md-body ol { list-style: decimal; }
+.md-body li { margin: 2px 0; }
+.md-body li > input[type="checkbox"] {
+  margin-right: 6px;
+  transform: translateY(1px);
+}
+.md-body blockquote {
+  border-left: 3px solid var(--accent);
+  padding: 4px 12px;
+  margin: 8px 0;
+  background: rgba(167, 139, 250, 0.06);
+  border-radius: 4px;
+  color: var(--fg-muted);
+}
+.md-body code {
+  background: rgba(15, 23, 42, 0.06);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12.5px;
+}
+.md-body pre {
+  background: rgba(15, 23, 42, 0.05);
+  padding: 12px;
+  border-radius: 8px;
+  margin: 8px 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+}
+.md-body pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+.md-body table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12.5px;
+  width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+.md-body th, .md-body td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+.md-body th {
+  background: var(--surface-2);
+  font-weight: 600;
+}
+.md-body tr:nth-child(even) td {
+  background: rgba(167, 139, 250, 0.03);
+}
+.md-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+.md-body a, .md-link {
+  color: var(--accent);
+  text-decoration: underline;
+  word-break: break-all;
+}
+.md-body a:hover, .md-link:hover { color: var(--accent-hover); }
+.md-body del { color: var(--fg-subtle); }
+.md-body img {
+  max-width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+/* Bot @mention chip inside chat bubbles */
+.md-body .mention,
+.mention {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(167, 139, 250, 0.14);
+  color: var(--accent);
+  font-weight: 500;
+  font-size: 0.93em;
+  border: 1px solid rgba(167, 139, 250, 0.32);
+  cursor: pointer;
+  transition: all var(--transition);
+  user-select: none;
+}
+.md-body .mention:hover,
+.mention:hover {
+  background: rgba(167, 139, 250, 0.22);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
