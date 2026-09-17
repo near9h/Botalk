@@ -53,6 +53,10 @@ export type Run = {
   group_id: number;
   status: string;
   title: string;
+  // Opaque random token used in shared URLs (`/group/{gid}?task=<token>`)
+  // instead of the internal integer id, so a recipient doesn't see or
+  // guess at the task volume of this group.
+  share_token: string;
   started_at: string;
   finished_at: string | null;
   total_tokens: number;
@@ -173,23 +177,23 @@ export const api = {
   // Tasks (user-facing alias of Runs): one task = one user turn + the
   // multi-bot reply it triggered. The chat UI binds every message to
   // exactly one task; "新会话" creates a new pending task, history
-  // drawer reopens an existing task by id.
+  // drawer reopens an existing task by id or share_token.
   listTasks: (groupId: number) =>
     request<Task[]>(`/api/tasks?group_id=${groupId}`),
-  getTask: (taskId: number) =>
-    request<Task>(`/api/tasks/${taskId}`),
+  getTask: (taskIdOrToken: number | string) =>
+    request<Task>(`/api/tasks/${taskIdOrToken}`),
   openTask: (groupId: number, title?: string) =>
     request<Task>("/api/tasks", {
       method: "POST",
       body: JSON.stringify({ group_id: groupId, title }),
     }),
-  renameTask: (taskId: number, title: string) =>
-    request<Task>(`/api/tasks/${taskId}`, {
+  renameTask: (taskIdOrToken: number | string, title: string) =>
+    request<Task>(`/api/tasks/${taskIdOrToken}`, {
       method: "PATCH",
       body: JSON.stringify({ title }),
     }),
-  deleteTask: (taskId: number) =>
-    request<void>(`/api/tasks/${taskId}`, { method: "DELETE" }),
+  deleteTask: (taskIdOrToken: number | string) =>
+    request<void>(`/api/tasks/${taskIdOrToken}`, { method: "DELETE" }),
 
   clearMessages: (groupId: number) =>
     request<void>(`/api/messages?group_id=${groupId}`, { method: "DELETE" }),
@@ -233,6 +237,11 @@ export const api = {
     }),
   communitySearch: (q: string) =>
     request<Array<Record<string, unknown>>>(`/api/skills/community/search?q=${encodeURIComponent(q)}`),
+  installCommunity: (body: { url: string; transport?: string; name?: string; description?: string; source?: string }) =>
+    request<Skill>("/api/skills/community/install", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   uploadSkillAsset: (skillId: number, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -349,7 +358,19 @@ export type ChatEvent =
   | { event: "error"; data: { error: string } };
 
 export function streamChat(
-  body: { group_id: number; prompt: string; attachment_ids?: number[] },
+  body: {
+    group_id: number;
+    prompt: string;
+    attachment_ids?: number[];
+    // Append this prompt into an existing task instead of opening a new
+    // one. The chat UI calls POST /api/tasks up front when the user
+    // hits "新会话", then includes the returned token here so the first
+    // message lands in that exact task (instead of a backend-allocated
+    // one the UI doesn't know about). Sending task_id (integer) is also
+    // supported for legacy callers.
+    task_token?: string;
+    task_id?: number;
+  },
   onEvent: (event: string, data: Record<string, unknown>) => void,
 ): () => void {
   const ctrl = new AbortController();
@@ -372,14 +393,26 @@ export function streamChat(
         const { value, done } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
-        // Parse SSE: lines starting with `event: …` / `data: …` separated
-        // by blank lines.
+        // Parse SSE: `event:` / `data:` lines separated by a blank line.
+        // Per the SSE spec (and sse-starlette's default), each line ends
+        // with CRLF and events are separated by a blank CRLF — i.e. the
+        // on-wire boundary is "\r\n\r\n". The earlier "\n\n" split missed
+        // the "\r" and silently dropped every event on the floor: the
+        // buffer grew forever and the UI only "saw" the chat reply after
+        // a manual page refresh (which re-reads from the DB). Match both
+        // "\r\n\r\n" and "\n\n" so we stay compatible with any future
+        // backend that swaps the separator.
         let idx: number;
         // eslint-disable-next-line no-cond-assign
-        while ((idx = buf.indexOf("\n\n")) >= 0) {
+        while ((idx = buf.search(/\r\n\r\n|\n\n/)) >= 0) {
+          const sepLen = buf.startsWith("\r\n\r\n", idx) ? 4 : 2;
           const chunk = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const lines = chunk.split("\n");
+          buf = buf.slice(idx + sepLen);
+          // Strip trailing "\r" from each line so "event: foo\r" still
+          // matches the `event:` / `data:` prefixes.
+          const lines = chunk.split("\n").map((l) =>
+            l.endsWith("\r") ? l.slice(0, -1) : l,
+          );
           let ev: string | null = null;
           let data = "";
           for (const line of lines) {

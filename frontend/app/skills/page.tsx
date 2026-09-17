@@ -48,6 +48,10 @@ export default function SkillsPage() {
   const [mcpTransport, setMcpTransport] = useState("streamable-http");
   const [communityQ, setCommunityQ] = useState("");
   const [communityResults, setCommunityResults] = useState<Array<Record<string, unknown>>>([]);
+  const [installingUrl, setInstallingUrl] = useState<string | null>(null);
+  // Independent modal so the marketplace results feel like a real
+  // "app store" rather than a flat list under the search box.
+  const [communityOpen, setCommunityOpen] = useState(false);
   const [importing, setImporting] = useState(false);
 
   // Create dialog
@@ -146,13 +150,245 @@ export default function SkillsPage() {
     if (!communityQ.trim()) return;
     setImporting(true);
     try {
-      setCommunityResults(await api.communitySearch(communityQ.trim()));
+      const results = await api.communitySearch(communityQ.trim());
+      setCommunityResults(results);
+      setCommunityOpen(true); // pop the marketplace modal
     } catch (e) {
       pushErr("社区搜索失败", e);
+      setCommunityResults([]);
     } finally {
       setImporting(false);
     }
   };
+
+  // Build a stable key per card so double-clicks don't fire two installs.
+  const onInstallCommunity = async (item: Record<string, unknown>) => {
+    const url = String(item.url ?? "");
+    if (!url) return;
+    setInstallingUrl(url);
+    try {
+      const installed = await api.installCommunity({
+        url,
+        transport: String(item.transport ?? "streamable-http"),
+        name: item.title ? String(item.title) : undefined,
+        description: item.description ? String(item.description) : undefined,
+        source: item.source ? String(item.source) : undefined,
+      });
+      toast.push({
+        title: "已安装到技能中心",
+        description: `「${installed.name}」可在机器人管理里勾选`,
+        variant: "success",
+      });
+      // Mark this row as installed so the user sees a checkmark.
+      setCommunityResults((prev) =>
+        prev.map((r) => (r === item ? { ...r, __installed: installed.id } : r)),
+      );
+      await refresh();
+    } catch (e) {
+      pushErr("安装失败", e);
+    } finally {
+      setInstallingUrl(null);
+    }
+  };
+
+  // Channel badge styling. Color-coded so the three sources are easy to
+  // tell apart in a long list.
+  const SOURCE_LABEL: Record<string, { label: string; bg: string; fg: string }> = {
+    mcp_marketplace: { label: "MCP Marketplace", bg: "rgba(99,102,241,0.15)", fg: "#4338ca" },
+    anthropic: { label: "Anthropic 官方", bg: "rgba(234,88,12,0.15)", fg: "#9a3412" },
+    findskill: { label: "findskill.md", bg: "rgba(14,165,233,0.15)", fg: "#0369a1" },
+  };
+
+  // Render a result card for the marketplace dialog.
+  const renderCommunityCard = (r: Record<string, unknown>, i: number) => {
+    const title = String(r.title ?? r.name ?? r.id ?? `结果 ${i + 1}`);
+    const url = String(r.url ?? r.html_url ?? r.homepage ?? "");
+    const desc = String(r.description ?? "");
+    const transport = String(r.transport ?? "streamable-http");
+    const installable = Boolean(r.installable ?? !!url);
+    const remoteUrl = (r.remote_url as string | undefined) ?? "";
+    const githubUrl = (r.github_url as string | undefined) ?? "";
+    const installedId = (r.__installed as number | undefined) ?? null;
+    const busy = installingUrl === url;
+    const source = String(r.source ?? "");
+    const sourceMeta = SOURCE_LABEL[source] ?? { label: source || "未知", bg: "var(--surface-solid)", fg: "var(--fg-muted)" };
+    const scoreVal = typeof r.score === "number" ? r.score : null;
+    const downloadsVal = typeof r.downloads === "number" ? r.downloads : null;
+    const alsoIn = Array.isArray(r.also_in) ? (r.also_in as string[]) : [];
+
+    return (
+      <div
+        key={`${title}-${i}`}
+        style={{
+          padding: "12px 14px",
+          borderRadius: "var(--radius-sm)",
+          background: "var(--surface-2)",
+          border: installedId
+            ? "1px solid rgba(34, 197, 94, 0.45)"
+            : "1px solid var(--border)",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 600, fontSize: 13 }}>{title}</span>
+            {/* 渠道标签 */}
+            <span
+              style={{
+                fontSize: 10,
+                padding: "2px 8px",
+                borderRadius: 999,
+                background: sourceMeta.bg,
+                color: sourceMeta.fg,
+                fontWeight: 600,
+              }}
+              title={`来源：${sourceMeta.label}`}
+            >
+              {sourceMeta.label}
+            </span>
+            {/* 评分 */}
+            {scoreVal !== null && (
+              <span
+                style={{
+                  fontSize: 10,
+                  padding: "2px 6px",
+                  borderRadius: 999,
+                  background: "var(--surface-solid)",
+                  border: "1px solid var(--border)",
+                  color: "var(--fg-muted)",
+                }}
+                title="来源给出的评分（越高越好）"
+              >
+                ★ {scoreVal >= 1000 ? `${(scoreVal / 1000).toFixed(1)}k` : scoreVal.toFixed(1)}
+              </span>
+            )}
+            {/* 下载量 */}
+            {downloadsVal !== null && (
+              <span
+                style={{
+                  fontSize: 10,
+                  padding: "2px 6px",
+                  borderRadius: 999,
+                  background: "var(--surface-solid)",
+                  border: "1px solid var(--border)",
+                  color: "var(--fg-muted)",
+                }}
+                title="下载量 / 安装量（来源不全时用 stars 代理）"
+              >
+                ⬇ {downloadsVal >= 1000 ? `${(downloadsVal / 1000).toFixed(1)}k` : downloadsVal}
+              </span>
+            )}
+            {transport && (
+              <span
+                style={{
+                  fontSize: 10,
+                  padding: "2px 6px",
+                  borderRadius: 999,
+                  background: "var(--surface-solid)",
+                  border: "1px solid var(--border)",
+                  color: "var(--fg-subtle)",
+                }}
+              >
+                {transport}
+              </span>
+            )}
+            {installedId ? (
+              <span
+                style={{
+                  fontSize: 10,
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  background: "rgba(34, 197, 94, 0.15)",
+                  color: "#15803d",
+                  fontWeight: 600,
+                }}
+              >
+                ✓ 已安装
+              </span>
+            ) : !installable ? (
+              <span
+                style={{
+                  fontSize: 10,
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  background: "var(--surface-solid)",
+                  border: "1px solid var(--border)",
+                  color: "var(--fg-subtle)",
+                }}
+              >
+                需本地部署
+              </span>
+            ) : null}
+            {alsoIn.length > 0 && (
+              <span
+                style={{
+                  fontSize: 10,
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  background: "rgba(168,85,247,0.12)",
+                  color: "#7e22ce",
+                }}
+                title={`同一条目也出现在：${alsoIn.join("、")}`}
+              >
+                也收录于：{alsoIn.map((s) => SOURCE_LABEL[s]?.label ?? s).join("、")}
+              </span>
+            )}
+          </div>
+          {desc && (
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--fg-muted)",
+                lineHeight: 1.5,
+                marginTop: 4,
+                overflow: "hidden",
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+              }}
+            >
+              {desc}
+            </div>
+          )}
+          {(remoteUrl || githubUrl) && (
+            <div style={{ display: "flex", gap: 10, marginTop: 6, flexWrap: "wrap" }}>
+              {remoteUrl && (
+                <span style={{ fontSize: 11, color: "var(--accent)", wordBreak: "break-all" }}>
+                  ⇨ {remoteUrl}
+                </span>
+              )}
+              {githubUrl && (
+                <a
+                  href={githubUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  style={{ fontSize: 11, color: "var(--fg-muted)" }}
+                >
+                  GitHub ↗
+                </a>
+              )}
+            </div>
+          )}
+        </div>
+        {installable && url && !installedId && (
+          <Button size="sm" onClick={() => onInstallCommunity(r)} disabled={busy}>
+            {busy ? "安装中…" : "⬇ 安装"}
+          </Button>
+        )}
+      </div>
+    );
+  };
+
+  // 健康监控：把 `__health__` 错误拆出来作为顶部警告条
+  const healthEntry = communityResults.find((r) => r.__health__) as
+    | { errors: Record<string, string> }
+    | undefined;
+  const healthErrors = healthEntry?.errors ?? {};
+  const displayResults = communityResults.filter((r) => !r.__health__);
 
   const onCreateSkill = async () => {
     if (!cName.trim()) {
@@ -352,44 +588,6 @@ export default function SkillsPage() {
               </div>
             </div>
           </div>
-
-          {communityResults.length > 0 && (
-            <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
-                社区结果（点击标题可复制/访问；直接通过「从 URL 导入」接入）
-              </div>
-              {communityResults.map((r, i) => {
-                const title = String(r.title ?? r.name ?? r.id ?? `结果 ${i + 1}`);
-                const url = String(r.url ?? r.html_url ?? r.homepage ?? "");
-                return (
-                  <div
-                    key={i}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: "var(--radius-sm)",
-                      background: "var(--surface-2)",
-                      border: "1px solid var(--border)",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: 12,
-                    }}
-                  >
-                    <span style={{ fontWeight: 500, fontSize: 13 }}>{title}</span>
-                    {url && (
-                      <a
-                        href={url}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        style={{ fontSize: 12, color: "var(--accent)", wordBreak: "break-all" }}
-                      >
-                        {url}
-                      </a>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </Card>
 
         {/* Skill grid */}
@@ -720,6 +918,78 @@ export default function SkillsPage() {
               </DialogFooter>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+      {/* Community marketplace dialog */}
+      <Dialog open={communityOpen} onOpenChange={setCommunityOpen}>
+        <DialogContent>
+          <DialogHeader
+            title={`🛒 社区技能市场：${communityQ || "全部"}`}
+            description="聚合 MCP Marketplace.io · Anthropic 官方 skills · findskill.md 三路开源市场，已按渠道去重，按评分排序。"
+            onClose={() => setCommunityOpen(false)}
+          />
+          {/* 健康监控条：把后端的 `__health__` 错误展示出来，提示用户 */}
+          {Object.keys(healthErrors).length > 0 && (
+            <div
+              style={{
+                marginTop: 14,
+                padding: "10px 12px",
+                borderRadius: "var(--radius-sm)",
+                background: "rgba(234, 179, 8, 0.10)",
+                border: "1px solid rgba(234, 179, 8, 0.35)",
+                fontSize: 12,
+                color: "#854d0e",
+                lineHeight: 1.6,
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                ⚠️ 部分渠道未返回结果
+              </div>
+              {Object.entries(healthErrors).map(([src, msg]) => (
+                <div key={src}>
+                  · <b>{SOURCE_LABEL[src]?.label ?? src}</b>: {String(msg)}
+                </div>
+              ))}
+              {healthErrors.anthropic || healthErrors.findskill ? (
+                <div style={{ marginTop: 4, color: "#92400e" }}>
+                  提示：在 <code>.env</code> 配置 <code>GITHUB_TOKEN</code> 可将 GitHub 接口限流从 60/h 提升到 5000/h
+                </div>
+              ) : null}
+            </div>
+          )}
+          <div
+            style={{
+              marginTop: 18,
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+              maxHeight: 460,
+              overflowY: "auto",
+            }}
+          >
+            {displayResults.length === 0 ? (
+              <div
+                style={{
+                  textAlign: "center",
+                  color: "var(--fg-subtle)",
+                  padding: 40,
+                  fontSize: 13,
+                }}
+              >
+                没有结果
+              </div>
+            ) : (
+              displayResults.map((r, i) => renderCommunityCard(r, i))
+            )}
+          </div>
+          <DialogFooter>
+            <div style={{ fontSize: 11, color: "var(--fg-subtle)", marginRight: "auto" }}>
+              共 {displayResults.length} 条 · 已按渠道去重
+            </div>
+            <Button variant="secondary" onClick={() => setCommunityOpen(false)}>
+              关闭
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </PageShell>

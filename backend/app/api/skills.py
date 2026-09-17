@@ -240,26 +240,163 @@ async def import_mcp(
 
 @router.get("/community/search")
 async def community_search(q: str) -> list[dict[str, Any]]:
-    if not settings.skill_market_api_url:
-        raise HTTPException(status_code=501, detail="未配置 SKILL_MARKET_API_URL，社区搜索不可用")
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                settings.skill_market_api_url,
-                params={"q": q},
+    """Search the public MCP marketplace for skills matching `q`.
+
+    Backed by `app.services.community.search_community`, which first
+    tries the MCP marketplace's own `search_servers` tool and falls
+    back to a legacy REST proxy if `SKILL_MARKET_API_URL` is set.
+    Empty list ⇒ "no results" (no toast errors).
+    """
+    from app.services import community as community_service
+
+    return await community_service.search_community(q)
+
+
+@router.post("/community/install", response_model=SkillOut, status_code=201)
+async def community_install(
+    payload: dict[str, Any],
+    session: AsyncSession = Depends(get_session),
+) -> SkillOut:
+    """Install a community search result as a real skill on this server.
+
+    Body shape:
+        { "url": str, "transport"?: "streamable-http"|"sse",
+          "name"?: str, "description"?: str,
+          "source"?: "mcp_marketplace"|"anthropic"|"findskill" }
+
+    Two paths:
+
+    * MCP marketplace entries → connect to the MCP server, enumerate
+      its tools, persist as a `mcp` skill.
+    * GitHub SKILL.md entries (`source ∈ {anthropic, findskill}` or a
+      GitHub URL) → fetch the SKILL.md via the raw.githubusercontent.com
+      endpoint, persist as a `knowledge` skill with the markdown body
+      as `instructions`.
+    """
+    from app.services import mcp as mcp_service
+
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url 不能为空")
+    transport = (payload.get("transport") or "streamable-http").strip()
+    name = (payload.get("name") or "").strip()
+    description = (payload.get("description") or "").strip()
+    source = (payload.get("source") or "").strip()
+
+    # ── GitHub SKILL.md install path ──
+    is_github = "github.com" in url or source in ("anthropic", "findskill")
+    if is_github and source in ("anthropic", "findskill"):
+        try:
+            from app.services.community import (
+                ANTHROPIC_REPO,
+                FINDSKILL_REPO,
+                _gh_token_headers,
+                _b64_to_text,
             )
-        resp.raise_for_status()
-        data = resp.json()
+            import httpx
+            import re as _re
+
+            # url pattern: https://github.com/<owner>/<repo>/tree/<branch>/skills/<name>
+            m = _re.search(r"github\.com/([^/]+)/([^/]+)/tree/[^/]+/skills/([^/]+)", url)
+            if m:
+                repo = f"{m.group(1)}/{m.group(2)}"
+                skill_dir = m.group(3)
+            else:
+                # Last-resort: try to extract repo + dir
+                m2 = _re.search(r"github\.com/([^/]+)/([^/]+)", url)
+                repo = f"{m2.group(1)}/{m2.group(2)}" if m2 else FINDSKILL_REPO
+                skill_dir = url.rstrip("/").rsplit("/", 1)[-1]
+
+            raw_url = f"https://api.github.com/repos/{repo}/contents/skills/{skill_dir}/SKILL.md"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.get(raw_url, headers=_gh_token_headers())
+                if r.status_code != 200:
+                    raise RuntimeError(f"GitHub {r.status_code}")
+            skill_md = _b64_to_text(r.json().get("content", ""))
+            if not skill_md.strip():
+                raise RuntimeError("SKILL.md 为空")
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"拉取 SKILL.md 失败: {exc}")
+
+        # Parse frontmatter for name / description
+        meta: dict[str, str] = {}
+        if skill_md.startswith("---"):
+            end = skill_md.find("\n---", 3)
+            if end > 0:
+                for line in skill_md[3:end].splitlines():
+                    if ":" in line:
+                        k, v = line.split(":", 1)
+                        meta[k.strip()] = v.strip().strip('"').strip("'")
+        fm_name = meta.get("name", "")
+        fm_desc = meta.get("description", "")
+
+        final_name = name or fm_name or skill_dir
+        final_desc = description or fm_desc
+        body = skill_md
+        key = _KEY_RE.sub("-", final_name.strip().lower()) or "community-skill"
+        base_key = key
+        n = 1
+        while (
+            await session.execute(select(Skill).where(Skill.key == key))
+        ).scalar_one_or_none():
+            n += 1
+            key = f"{base_key}-{n}"
+        skill = Skill(
+            key=key,
+            name=final_name,
+            description=final_desc,
+            type="knowledge",
+            category="custom",
+            icon="📚",
+            manifest={
+                "instructions": body,
+                "source": source,
+                "source_url": url,
+                "assets": [],
+            },
+            config_schema={
+                "assets": {"type": "list", "label": "模板资源", "accept": [".md", ".markdown", ".txt"]},
+            },
+            builtin=False,
+        )
+        session.add(skill)
+        await session.commit()
+        await session.refresh(skill)
+        return _to_out(skill)
+
+    # ── MCP install path (default) ──
+    try:
+        tools = await mcp_service.list_tools(url, transport)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"社区搜索失败: {exc}")
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        for k in ("data", "results", "items", "servers", "skills"):
-            if isinstance(data.get(k), list):
-                return data[k]
-        return [data]
-    return []
+        raise HTTPException(status_code=502, detail=f"连接 MCP server 失败: {exc}")
+    if not tools:
+        raise HTTPException(status_code=400, detail="MCP server 未暴露任何 tools")
+
+    final_name = name or url.rstrip("/").rsplit("/", 1)[-1] or "MCP 技能"
+    key = _KEY_RE.sub("-", final_name.strip().lower()) or "mcp-skill"
+    base_key = key
+    n = 1
+    while (
+        await session.execute(select(Skill).where(Skill.key == key))
+    ).scalar_one_or_none():
+        n += 1
+        key = f"{base_key}-{n}"
+
+    skill = Skill(
+        key=key,
+        name=final_name,
+        description=description or f"来自 MCP marketplace 的 {len(tools)} 个工具",
+        type="mcp",
+        category="mcp",
+        icon="🔌",
+        manifest={"url": url, "transport": transport, "tools": tools},
+        config_schema={},
+        builtin=False,
+    )
+    session.add(skill)
+    await session.commit()
+    await session.refresh(skill)
+    return _to_out(skill)
 
 
 # ─────────────────────────── template assets ───────────────────────────

@@ -43,6 +43,7 @@ def _to_out(r: Run) -> RunOut:
         group_id=r.group_id,
         status=r.status,
         title=r.title or "",
+        share_token=r.share_token or "",
         started_at=r.started_at,
         finished_at=r.finished_at,
         total_tokens=r.total_tokens,

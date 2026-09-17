@@ -86,6 +86,10 @@ class RunOut(BaseModel):
     group_id: int
     status: str
     title: str = ""
+    # Opaque random token for safe URL sharing. UI builds links as
+    # `/group/{gid}?task=<share_token>` so the recipient pins to this
+    # exact thread without seeing the internal integer id.
+    share_token: str = ""
     started_at: datetime
     finished_at: datetime | None
     total_tokens: int
@@ -116,6 +120,12 @@ class ChatRequest(BaseModel):
     # context for this run. Each bot sees the concatenated Markdown in its
     # first user message.
     attachment_ids: list[int] | None = None
+    # Optional: append this user message into an existing task instead of
+    # creating a new one. Accepts either the integer id (legacy/internal)
+    # or the share_token (preferred for URLs). When both are missing we
+    # allocate a fresh task.
+    task_id: int | None = None
+    task_token: str | None = Field(default=None, max_length=16)
 
 
 # ─────────────────────────── skills ───────────────────────────

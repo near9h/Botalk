@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     # "bearer" (default) | "query" — how to attach `skill_market_api_key`.
     skill_market_auth_style: str = "bearer"
 
+    # Optional GitHub token used for community search (find-skills,
+    # anthropics/skills). Raises the unauthenticated rate limit from
+    # 60→5000 req/h. Anonymous calls still work but may 429 under load.
+    github_token: str = ""
+
     # MinerU PDF parser — used to turn uploaded PDFs into Markdown context.
     mineru_api_key: str = ""
     # MinerU model: pipeline (default) | vlm | MinerU-HTML

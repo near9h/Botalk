@@ -117,6 +117,15 @@ class Run(Base):
     # save_message call so /api/tasks list doesn't need a per-row count
     # query (which would dominate as messages accumulate).
     message_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Opaque, unguessable share token (~71 bits of entropy). Used in
+    # shared URLs instead of the internal integer id so that
+    #   1. the recipient doesn't see /guess at total task volume,
+    #   2. a leaked link still doesn't let a third party iterate ids.
+    # Generated on creation; immutable thereafter so the URL stays
+    # valid for the lifetime of the task.
+    share_token: Mapped[str] = mapped_column(
+        String(16), default="", nullable=False, unique=True
+    )
 
 
 class Message(Base):

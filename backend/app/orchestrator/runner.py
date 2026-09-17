@@ -1,4 +1,6 @@
 """Persist group chat runs and messages."""
+import secrets
+import string
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -6,6 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.models import Bot, Group, Message, Run
+
+
+# 12 base62 chars ≈ 71 bits. See app.db.models.Run.share_token for why
+# we expose this instead of the integer id in URLs.
+_TOKEN_ALPHABET = string.ascii_letters + string.digits
+_TOKEN_LENGTH = 12
+
+
+def generate_share_token() -> str:
+    """Mint a fresh, unguessable share token. CSPRNG-backed via `secrets`."""
+    return "".join(secrets.choice(_TOKEN_ALPHABET) for _ in range(_TOKEN_LENGTH))
 
 
 def _derive_title(prompt: str) -> str:
@@ -55,6 +68,7 @@ async def start_run(session: AsyncSession, group_id: int, prompt: str) -> Run:
         user_prompt=prompt,
         title=_derive_title(prompt),
         message_count=0,
+        share_token=generate_share_token(),
     )
     session.add(run)
     await session.commit()
@@ -76,6 +90,7 @@ async def create_empty_task(session: AsyncSession, group_id: int) -> Run:
         user_prompt="",
         title="",
         message_count=0,
+        share_token=generate_share_token(),
     )
     session.add(run)
     await session.commit()

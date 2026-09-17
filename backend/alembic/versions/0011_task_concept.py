@@ -63,6 +63,18 @@ def upgrade() -> None:
          WHERE title = ''
         """
     )
+    # Backfill message_count for tasks that were created before the
+    # column existed. New saves (post-migration) bump this column
+    # automatically inside save_message().
+    op.execute(
+        """
+        UPDATE runs r
+           SET message_count = COALESCE((
+             SELECT COUNT(*) FROM messages m WHERE m.run_id = r.id
+           ), 0)
+         WHERE message_count = 0
+        """
+    )
 
 
 def downgrade() -> None:

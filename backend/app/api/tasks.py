@@ -26,12 +26,26 @@ def _to_out(r: Run) -> RunOut:
         group_id=r.group_id,
         status=r.status,
         title=r.title or "",
+        share_token=r.share_token or "",
         started_at=r.started_at,
         finished_at=r.finished_at,
         total_tokens=r.total_tokens,
         user_prompt=r.user_prompt,
         message_count=r.message_count or 0,
     )
+
+
+async def _resolve_task(session: AsyncSession, key: str) -> Run | None:
+    """Look up a task by either its integer id or its share_token.
+
+    The URL parameter on /api/tasks/{task_id} accepts both forms so the
+    UI can pin to a shared link (`?task=<token>`) or call the legacy
+    integer-id endpoint. Identifies a numeric string and dispatches.
+    """
+    if key.isdigit():
+        return await session.get(Run, int(key))
+    result = await session.execute(select(Run).where(Run.share_token == key))
+    return result.scalar_one_or_none()
 
 
 @router.post("", response_model=RunOut, status_code=status.HTTP_201_CREATED)
@@ -76,9 +90,9 @@ async def list_tasks(
 
 @router.get("/{task_id}", response_model=RunOut)
 async def get_task(
-    task_id: int, session: AsyncSession = Depends(get_session)
+    task_id: str, session: AsyncSession = Depends(get_session)
 ) -> RunOut:
-    run = await session.get(Run, task_id)
+    run = await _resolve_task(session, task_id)
     if not run:
         raise HTTPException(status_code=404, detail="task not found")
     return _to_out(run)
@@ -86,12 +100,12 @@ async def get_task(
 
 @router.patch("/{task_id}", response_model=RunOut)
 async def rename_task(
-    task_id: int,
+    task_id: str,
     payload: RunUpdate,
     session: AsyncSession = Depends(get_session),
 ) -> RunOut:
     """Rename a task. Only the user-facing title is editable."""
-    run = await session.get(Run, task_id)
+    run = await _resolve_task(session, task_id)
     if not run:
         raise HTTPException(status_code=404, detail="task not found")
     if payload.title is not None:
@@ -103,14 +117,14 @@ async def rename_task(
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_task(
-    task_id: int, session: AsyncSession = Depends(get_session)
+    task_id: str, session: AsyncSession = Depends(get_session)
 ) -> None:
     """Delete a task and all its messages.
 
     Unlike group deletion this is cheap and reversible-by-recording:
     the user might want to wipe a single chat thread they regret.
     """
-    run = await session.get(Run, task_id)
+    run = await _resolve_task(session, task_id)
     if not run:
         raise HTTPException(status_code=404, detail="task not found")
     await session.delete(run)

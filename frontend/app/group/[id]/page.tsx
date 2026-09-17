@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Avatar,
@@ -24,7 +24,15 @@ export default function GroupPage({ params }: { params: { id: string } }) {
   const groupId = Number(params.id);
   const toast = useToast();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { t } = useI18n();
+
+  // `?task=<share_token>` lets a URL pin to a specific conversation
+  // thread. The token is the same unguessable value that lives in the
+  // task row, so a leaked link still doesn't let a third party iterate
+  // through every task in the group. Falls back to the newest task
+  // when absent or unknown.
+  const taskFromUrl = searchParams.get("task") || null;
 
   const [group, setGroup] = useState<Group | null>(null);
   const [bots, setBots] = useState<Bot[]>([]);
@@ -34,20 +42,32 @@ export default function GroupPage({ params }: { params: { id: string } }) {
   const [roundIndex, setRoundIndex] = useState(0);
   const [wizardOpen, setWizardOpen] = useState(false);
   // History: tasks = past conversation threads in this group.
-  // activeTaskId = the task currently displayed in the main panel.
-  // `null` means "no task selected yet" (initial loading state).
+  // activeTaskId = the task currently displayed in the main panel
+  // (identified by integer id; we keep the id internally because the
+  // messages/run_id foreign keys are integer-typed and switching the
+  // entire UI to tokens would be churn for no win).
+  // activeTaskToken = the share_token of the active task, kept in sync
+  // with activeTaskId so the URL can be rewritten on navigation.
   const [tasks, setTasks] = useState<Task[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState<number | null>(null);
+  const [activeTaskToken, setActiveTaskToken] = useState<string | null>(null);
   // Title of the currently-active task, for the header subtitle.
   const [activeTaskTitle, setActiveTaskTitle] = useState<string>("");
   const abortRef = useRef<(() => void) | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Initial view: group + bots + task list, then default to the latest
-  // task (instead of "all messages across all tasks"). Showing every
-  // task concatenated makes a refresh appear to "continue the previous
-  // chat" — which was confusing after the user clicked "新会话".
+  // Initial view: group + bots + task list, then resolve which task to
+  // open. Priority order:
+  //   1. `?task=<token>` from the URL (e.g. a shared link) — pin to
+  //      that exact thread. If the token doesn't exist in this group
+  //      we fall back to creating a fresh pending task (so the URL
+  //      self-heals instead of landing the user in someone else's
+  //      conversation by accident).
+  //   2. No `?task=` — open a brand-new pending task in this group.
+  //      This matches the "click a group card from the home page →
+  //      land on a clean chat" UX. Refreshing keeps you on the same
+  //      pending task because its token is now in the URL.
   const loadAll = useCallback(async () => {
     try {
       const [g, b, taskList] = await Promise.all([
@@ -58,9 +78,51 @@ export default function GroupPage({ params }: { params: { id: string } }) {
       setGroup(g);
       setBots(b);
       setTasks(taskList);
-      const initialTaskId = taskList[0]?.id ?? null;
+      // Match the URL's token against the visible task list.
+      const pinned = taskFromUrl
+        ? taskList.find((x) => x.share_token === taskFromUrl)
+        : null;
+      // If the URL pinned a known task, use it. Otherwise open a fresh
+      // pending task so the user starts on a clean slate. (Previously
+      // we silently fell back to the newest task, which made the chat
+      // look like it was "continuing" an old conversation after every
+      // group-card click.)
+      let initialTask = pinned;
+      if (!initialTask) {
+        try {
+          initialTask = await api.openTask(groupId);
+          // Prepend so it's at the top of the history drawer.
+          setTasks((prev) => [initialTask!, ...prev.filter((t) => t.id !== initialTask!.id)]);
+        } catch (e) {
+          // If creating a task fails for any reason, fall back to the
+          // newest existing task so the user at least sees *something*.
+          console.warn("openTask failed; falling back to newest task", e);
+          initialTask = taskList[0] ?? null;
+        }
+      }
+      const initialTaskId = initialTask?.id ?? null;
       setActiveTaskId(initialTaskId);
-      setActiveTaskTitle(taskList[0]?.title || "");
+      setActiveTaskToken(initialTask?.share_token || null);
+      setActiveTaskTitle(initialTask?.title || "");
+      // Keep the URL in sync with what we actually opened. If the URL
+      // was missing or pointed at a stale/unknown token, write the
+      // current task's token into the address bar (or strip it for the
+      // empty-state fallback).
+      if (initialTask) {
+        const want = initialTask.share_token;
+        const have = searchParams.get("task");
+        if (want && want !== have) {
+          const next = new URLSearchParams(Array.from(searchParams.entries()));
+          next.set("task", want);
+          const qs = next.toString();
+          router.replace(`/group/${groupId}${qs ? `?${qs}` : ""}`, { scroll: false });
+        } else if (!want && have) {
+          const next = new URLSearchParams(Array.from(searchParams.entries()));
+          next.delete("task");
+          const qs = next.toString();
+          router.replace(`/group/${groupId}${qs ? `?${qs}` : ""}`, { scroll: false });
+        }
+      }
       const hist = initialTaskId
         ? await api.listMessages(groupId, initialTaskId)
         : [];
@@ -101,7 +163,23 @@ export default function GroupPage({ params }: { params: { id: string } }) {
       const msg = e instanceof Error ? e.message : String(e);
       toast.push({ title: t("common.toast.loadFail"), description: msg, variant: "error" });
     }
-  }, [groupId, toast, t]);
+  }, [groupId, toast, t, taskFromUrl, router, searchParams]);
+
+  /** Switch the active task — keeps id, token, and title in sync and
+   *  rewrites the URL `?task=<token>` so the link stays shareable. */
+  const setActiveTask = useCallback(
+    (task: { id: number; share_token?: string; title?: string } | null) => {
+      setActiveTaskId(task?.id ?? null);
+      setActiveTaskToken(task?.share_token || null);
+      setActiveTaskTitle(task?.title || "");
+      const next = new URLSearchParams(Array.from(searchParams.entries()));
+      if (task?.share_token) next.set("task", task.share_token);
+      else next.delete("task");
+      const qs = next.toString();
+      router.replace(`/group/${groupId}${qs ? `?${qs}` : ""}`, { scroll: false });
+    },
+    [groupId, router, searchParams],
+  );
 
   // Lightweight refresh (after member add/remove / new task / etc.):
   // re-fetch group, bots, and task list without disturbing the task
@@ -147,7 +225,15 @@ export default function GroupPage({ params }: { params: { id: string } }) {
 
     const attachmentIds = attachments.map((a) => a.id);
     const rawAbort = streamChat(
-      { group_id: groupId, prompt, attachment_ids: attachmentIds },
+      {
+        group_id: groupId,
+        prompt,
+        attachment_ids: attachmentIds,
+        // Append to the currently-active task. Prefer the share_token
+        // (URL-safe, unguessable) over the integer id. Backend falls
+        // back to creating a new task if neither resolves.
+        task_token: activeTaskToken ?? undefined,
+      },
       (event, data) => {
         const d = data as Record<string, unknown>;
         switch (event) {
@@ -237,9 +323,24 @@ export default function GroupPage({ params }: { params: { id: string } }) {
           case "run_end":
             setStreaming(false);
             setActiveSpeaker(null);
-            const finishedRunId = (d.run_id as number) ?? null;
-            if (finishedRunId != null) setActiveRunId(finishedRunId);
-            refresh(); // refresh the history session list (new run added)
+            const finishedTaskId = (d.run_id as number) ?? null;
+            if (finishedTaskId != null) {
+              // Refresh the task row to pick up backend-side fields
+              // (status flip, title backfill from the user prompt, and
+              // most importantly the canonical share_token we just
+              // minted for any newly created task). Promise chain
+              // because the onEvent callback itself isn't async.
+              api
+                .getTask(finishedTaskId)
+                .then((t) => {
+                  setActiveTask(t);
+                })
+                .catch(() => {
+                  /* non-fatal — fall back to the id-only path */
+                  setActiveTaskId(finishedTaskId);
+                });
+            }
+            refresh(); // refresh the history list (new task added)
             break;
         }
       },
@@ -265,12 +366,15 @@ export default function GroupPage({ params }: { params: { id: string } }) {
     setActiveSpeaker(null);
   };
 
-  /** Open a past session from the history panel. */
-  const selectRun = useCallback(
-    async (runId: number) => {
+  /** Open a past task from the history panel. */
+  const selectTask = useCallback(
+    async (taskId: number) => {
       try {
-        const hist = await api.listMessages(groupId, runId);
-        setActiveRunId(runId);
+        const [hist, task] = await Promise.all([
+          api.listMessages(groupId, taskId),
+          api.getTask(taskId),
+        ]);
+        setActiveTask(task);
         setMessages(
           hist.map((m: Message) => ({
             id: `db-${m.id}`,
@@ -286,30 +390,39 @@ export default function GroupPage({ params }: { params: { id: string } }) {
         toast.push({ title: t("common.toast.loadFail"), description: msg, variant: "error" });
       }
     },
-    [groupId, bots, toast, t],
+    [groupId, bots, toast, t, setActiveTask],
   );
 
-  /** Back to the latest-session view. (The "all sessions across runs"
-   * concatenated view was removed because it confused users — a page
-   * refresh made it look like the previous chat had resumed.) */
+  /** Back to the latest-task view (history drawer's home button). */
   const showAllMessages = useCallback(async () => {
     setHistoryOpen(false);
     await loadAll();
   }, [loadAll]);
 
   /**
-   * Start a fresh session: only clears the local view. History stays in the
-   * DB and remains reachable through the history panel.
+   * Open a brand-new task in this group. Backend creates a pending run
+   * (no messages yet); the UI clears the bubble list and switches to
+   * this task so the next user prompt goes into it. This is what the
+   * "新会话" button does.
    */
-  const newSession = () => {
+  const newSession = async () => {
     if (streaming) {
       toast.push({ title: t("group.newSession.busy"), variant: "info" });
       return;
     }
-    setActiveRunId(null);
-    setMessages([]);
-    setRoundIndex(0);
-    setActiveSpeaker(null);
+    try {
+      const task = await api.openTask(groupId);
+      // Refresh the history list first so the new task shows up,
+      // then switch the active view to it.
+      await refresh();
+      setActiveTask(task);
+      setMessages([]);
+      setRoundIndex(0);
+      setActiveSpeaker(null);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.push({ title: t("common.toast.loadFail"), description: msg, variant: "error" });
+    }
   };
 
   const addMember = async (botId: number) => {
@@ -596,15 +709,21 @@ export default function GroupPage({ params }: { params: { id: string } }) {
           >
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <Avatar emoji="💬" size={36} color={avatarColor(group.name)} />
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 600 }}>{group.name}</div>
-                <div style={{ fontSize: 11, color: "var(--fg-subtle)" }}>
+                <div style={{ fontSize: 11, color: "var(--fg-subtle)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 480 }}>
                   {streaming ? (
                     <span style={{ color: "var(--accent)" }}>
                       {t("group.header.discussing", { n: memberBots.length })}
                     </span>
                   ) : (
-                    <span>{t("group.header.idle", { n: memberBots.length })}</span>
+                    <span>
+                      {activeTaskTitle
+                        ? `📌 ${activeTaskTitle}`
+                        : activeTaskId
+                          ? t("group.header.idle", { n: memberBots.length })
+                          : t("group.header.noTask")}
+                    </span>
                   )}
                 </div>
               </div>
@@ -799,48 +918,159 @@ export default function GroupPage({ params }: { params: { id: string } }) {
                   gap: 8,
                 }}
               >
-                {runs.length === 0 ? (
+                {tasks.length === 0 ? (
                   <div style={{ textAlign: "center", color: "var(--fg-subtle)", padding: 40, fontSize: 13 }}>
                     {t("group.history.empty")}
                   </div>
                 ) : (
-                  runs.map((run) => (
-                    <button
-                      key={run.id}
-                      onClick={() => selectRun(run.id)}
-                      style={{
-                        textAlign: "left",
-                        padding: 12,
-                        borderRadius: "var(--radius)",
-                        background:
-                          activeRunId === run.id
+                  tasks.map((task) => {
+                    const isActive = activeTaskId === task.id;
+                    // Prefer the user-set title; fall back to the first
+                    // 60 chars of the prompt; finally show "未命名任务".
+                    const label =
+                      task.title?.trim() ||
+                      (task.user_prompt?.trim()
+                        ? task.user_prompt.length > 60
+                          ? `${task.user_prompt.slice(0, 60)}…`
+                          : task.user_prompt
+                        : "未命名任务");
+                    const statusIcon =
+                      task.status === "running"
+                        ? "🟢"
+                        : task.status === "pending"
+                          ? "🟡"
+                          : task.status === "error"
+                            ? "🔴"
+                            : "⚪";
+                    return (
+                      <div
+                        key={task.id}
+                        onClick={() => selectTask(task.id)}
+                        style={{
+                          padding: 12,
+                          borderRadius: "var(--radius)",
+                          background: isActive
                             ? "rgba(167, 139, 250, 0.12)"
                             : "var(--surface-2)",
-                        border:
-                          activeRunId === run.id
+                          border: isActive
                             ? "1px solid rgba(167, 139, 250, 0.35)"
                             : "1px solid var(--border)",
-                        transition: "all var(--transition)",
-                      }}
-                    >
-                      <div style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.4, marginBottom: 6 }}>
-                        {run.user_prompt.length > 60
-                          ? `${run.user_prompt.slice(0, 60)}…`
-                          : run.user_prompt}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: "var(--fg-subtle)",
+                          transition: "all var(--transition)",
+                          cursor: "pointer",
                           display: "flex",
-                          justifyContent: "space-between",
+                          flexDirection: "column",
+                          gap: 6,
                         }}
                       >
-                        <span>{new Date(run.started_at).toLocaleString()}</span>
-                        <span>{t("group.history.sessionCount", { n: run.message_count })}</span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontSize: 12 }}>{statusIcon}</span>
+                          <span style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.4, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {label}
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color: "var(--fg-subtle)",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: 6,
+                          }}
+                        >
+                          <span>{new Date(task.started_at).toLocaleString()}</span>
+                          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span>{t("group.history.sessionCount", { n: task.message_count })}</span>
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const next = prompt("重命名任务", task.title || label);
+                                if (next != null && next !== task.title) {
+                                  try {
+                                    // Use share_token rather than the integer id
+                                    // so the rename goes through the same
+                                    // safe-by-construction URL path the rest
+                                    // of the API uses.
+                                    await api.renameTask(task.share_token, next.trim() || "未命名任务");
+                                    await refresh();
+                                    if (isActive) setActiveTaskTitle(next.trim() || "未命名任务");
+                                  } catch (err) {
+                                    toast.push({
+                                      title: "重命名失败",
+                                      description: err instanceof Error ? err.message : String(err),
+                                      variant: "error",
+                                    });
+                                  }
+                                }
+                              }}
+                              title="重命名"
+                              style={{
+                                width: 20,
+                                height: 20,
+                                borderRadius: 4,
+                                background: "transparent",
+                                border: "none",
+                                color: "var(--fg-subtle)",
+                                cursor: "pointer",
+                                fontSize: 12,
+                              }}
+                            >
+                              ✎
+                            </button>
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                if (!confirm(`删除任务「${label}」？该任务下的所有消息会一起删除。`)) return;
+                                try {
+                                  await api.deleteTask(task.id);
+                                  if (isActive) {
+                                    // Fall back to the newest remaining task.
+                                    const remaining = tasks.filter((x) => x.id !== task.id);
+                                    const fallback = remaining[0] ?? null;
+                                    setActiveTask(fallback);
+                                    if (fallback) {
+                                      const hist = await api.listMessages(groupId, fallback.id);
+                                      setMessages(
+                                        hist.map((m: Message) => ({
+                                          id: `db-${m.id}`,
+                                          role: m.role,
+                                          botId: m.bot_id,
+                                          botName: bots.find((x) => x.id === m.bot_id)?.name ?? null,
+                                          content: m.content,
+                                        })),
+                                      );
+                                    } else {
+                                      setMessages([]);
+                                    }
+                                  }
+                                  await refresh();
+                                } catch (err) {
+                                  toast.push({
+                                    title: "删除任务失败",
+                                    description: err instanceof Error ? err.message : String(err),
+                                    variant: "error",
+                                  });
+                                }
+                              }}
+                              title="删除任务"
+                              style={{
+                                width: 20,
+                                height: 20,
+                                borderRadius: 4,
+                                background: "transparent",
+                                border: "none",
+                                color: "var(--fg-subtle)",
+                                cursor: "pointer",
+                                fontSize: 12,
+                              }}
+                            >
+                              🗑
+                            </button>
+                          </span>
+                        </div>
                       </div>
-                    </button>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>

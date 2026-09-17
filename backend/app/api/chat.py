@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 from sse_starlette.sse import EventSourceResponse
 
 from app.config import get_settings
-from app.db.models import Attachment, BotSkill  # noqa: F811
+from app.db.models import Attachment, BotSkill, Run  # noqa: F811
 from app.db.session import get_session
 from app.orchestrator.msghub import run_group_discussion
 from app.orchestrator.runner import (
@@ -83,7 +83,32 @@ async def stream_chat(
             }
         )
 
-    run = await start_run(session, payload.group_id, payload.prompt)
+    # If the caller passed an explicit task reference (the UI opens a
+    # new task up front via POST /api/tasks), append to that task
+    # instead of allocating a fresh one. Accepts either the integer id
+    # (legacy) or the share_token (preferred for URLs). The
+    # pending→running transition and title backfill happen inside
+    # save_message.
+    run: Run | None = None
+    if payload.task_id is not None:
+        run = await session.get(Run, payload.task_id)
+    elif payload.task_token:
+        result = await session.execute(
+            select(Run).where(Run.share_token == payload.task_token)
+        )
+        run = result.scalar_one_or_none()
+    if run is not None:
+        if run.group_id != payload.group_id:
+            raise HTTPException(
+                status_code=404, detail="task not found in this group"
+            )
+        # If the task is still pending (no user message yet), start it.
+        if run.status == "pending":
+            run.status = "running"
+            await session.commit()
+            await session.refresh(run)
+    else:
+        run = await start_run(session, payload.group_id, payload.prompt)
 
     # SSE responses need explicit no-cache + no-buffering headers. Without
     # them, intermediate proxies (and even some browsers via fetch + reader)

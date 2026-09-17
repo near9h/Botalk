@@ -22,20 +22,32 @@ def _mcp_sdk():
         import mcp  # noqa: F401
         from mcp import ClientSession
         from mcp.client.sse import sse_client
-        from mcp.client.streamable_http import streamablehttp_client
+        # The mcp SDK renamed the symbol between releases. Try the newer
+        # `streamable_http_client` first, then fall back to the legacy
+        # `streamablehttp_client` so the same code works on any pinned
+        # version.
+        try:
+            from mcp.client.streamable_http import streamable_http_client as _sh
+        except Exception:  # noqa: BLE001
+            from mcp.client.streamable_http import streamablehttp_client as _sh  # type: ignore[attr-defined]
 
-        return ClientSession, sse_client, streamablehttp_client
+        return ClientSession, sse_client, _sh
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError("MCP SDK 未安装，请安装 `mcp` 依赖") from exc
 
 
 def _client_context(transport: str, url: str):
-    ClientSession, sse_client, streamablehttp_client = _mcp_sdk()
+    ClientSession, sse_client, _sh = _mcp_sdk()
     timeout = settings.mcp_timeout_seconds
     if transport == "sse":
         return sse_client(url, timeout=timeout)
-    # default + fallback: streamable http
-    return streamablehttp_client(url, timeout=timeout)
+    # default + fallback: streamable http. The newer mcp SDK does not
+    # accept `timeout=` directly on the client constructor (it manages
+    # per-request timeouts via httpx), so we wrap our own if possible.
+    try:
+        return _sh(url, timeout=timeout)
+    except TypeError:
+        return _sh(url)
 
 
 async def list_tools(url: str, transport: str = "streamable-http") -> list[dict[str, Any]]:
@@ -55,7 +67,7 @@ async def list_tools(url: str, transport: str = "streamable-http") -> list[dict[
                     {
                         "name": t.name,
                         "description": t.description or "",
-                        "inputSchema": t.inputSchema or {},
+                        "inputSchema": getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {},
                     }
                 )
     return out
@@ -74,7 +86,10 @@ async def call_tool(
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool(tool_name, arguments or {})
-            return _serialize_content(result.content, result.isError)
+            is_error = getattr(result, "is_error", None)
+            if is_error is None:
+                is_error = getattr(result, "isError", False)
+            return _serialize_content(result.content, is_error)
 
 
 def _serialize_content(content: Any, is_error: bool) -> str:
