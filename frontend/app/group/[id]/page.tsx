@@ -82,47 +82,30 @@ export default function GroupPage({ params }: { params: { id: string } }) {
       const pinned = taskFromUrl
         ? taskList.find((x) => x.share_token === taskFromUrl)
         : null;
-      // If the URL pinned a known task, use it. Otherwise open a fresh
-      // pending task so the user starts on a clean slate. (Previously
-      // we silently fell back to the newest task, which made the chat
-      // look like it was "continuing" an old conversation after every
-      // group-card click.)
-      let initialTask = pinned;
+      // Priority:
+      //   1. URL pinned task  → use it
+      //   2. Newest existing task → use it (don't create a new empty one,
+      //      that just piles up "未命名任务" drafts every time you click
+      //      a group card)
+      //   3. Group is genuinely empty → create one fresh task
+      let initialTask = pinned ?? taskList[0] ?? null;
       if (!initialTask) {
         try {
           initialTask = await api.openTask(groupId);
-          // Prepend so it's at the top of the history drawer.
           setTasks((prev) => [initialTask!, ...prev.filter((t) => t.id !== initialTask!.id)]);
         } catch (e) {
-          // If creating a task fails for any reason, fall back to the
-          // newest existing task so the user at least sees *something*.
-          console.warn("openTask failed; falling back to newest task", e);
-          initialTask = taskList[0] ?? null;
+          console.warn("openTask failed", e);
         }
       }
       const initialTaskId = initialTask?.id ?? null;
       setActiveTaskId(initialTaskId);
       setActiveTaskToken(initialTask?.share_token || null);
       setActiveTaskTitle(initialTask?.title || "");
-      // Keep the URL in sync with what we actually opened. If the URL
-      // was missing or pointed at a stale/unknown token, write the
-      // current task's token into the address bar (or strip it for the
-      // empty-state fallback).
-      if (initialTask) {
-        const want = initialTask.share_token;
-        const have = searchParams.get("task");
-        if (want && want !== have) {
-          const next = new URLSearchParams(Array.from(searchParams.entries()));
-          next.set("task", want);
-          const qs = next.toString();
-          router.replace(`/group/${groupId}${qs ? `?${qs}` : ""}`, { scroll: false });
-        } else if (!want && have) {
-          const next = new URLSearchParams(Array.from(searchParams.entries()));
-          next.delete("task");
-          const qs = next.toString();
-          router.replace(`/group/${groupId}${qs ? `?${qs}` : ""}`, { scroll: false });
-        }
-      }
+      // Don't rewrite the URL on initial mount. The address bar is the
+      // source of truth for "which task am I in" — auto-syncing it here
+      // causes the link to flicker between tokens whenever the empty
+      // drafts at the top of the list reorder. URL only updates when the
+      // user actively switches tasks (see setActiveTask below).
       const hist = initialTaskId
         ? await api.listMessages(groupId, initialTaskId)
         : [];
@@ -176,7 +159,14 @@ export default function GroupPage({ params }: { params: { id: string } }) {
       if (task?.share_token) next.set("task", task.share_token);
       else next.delete("task");
       const qs = next.toString();
-      router.replace(`/group/${groupId}${qs ? `?${qs}` : ""}`, { scroll: false });
+      const target = `/group/${groupId}${qs ? `?${qs}` : ""}`;
+      // Skip the router round-trip if the URL would be identical —
+      // avoids a no-op navigation when the user re-clicks the task
+      // they were already on.
+      const current = `/group/${groupId}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`;
+      if (target !== current) {
+        router.replace(target, { scroll: false });
+      }
     },
     [groupId, router, searchParams],
   );
@@ -412,9 +402,13 @@ export default function GroupPage({ params }: { params: { id: string } }) {
     }
     try {
       const task = await api.openTask(groupId);
-      // Refresh the history list first so the new task shows up,
-      // then switch the active view to it.
-      await refresh();
+      // Prepend the brand-new task to the history list ourselves rather
+      // than re-fetching: the backend's GET /api/tasks filters out empty
+      // pending drafts, so refresh() would erase this task from view and
+      // the UI would snap back to the previously active task. Once the
+      // user sends their first message, message_count becomes 1 and the
+      // task naturally reappears in the next refresh.
+      setTasks((prev) => [task, ...prev.filter((t) => t.id !== task.id)]);
       setActiveTask(task);
       setMessages([]);
       setRoundIndex(0);
@@ -925,20 +919,29 @@ export default function GroupPage({ params }: { params: { id: string } }) {
                 ) : (
                   tasks.map((task) => {
                     const isActive = activeTaskId === task.id;
-                    // Prefer the user-set title; fall back to the first
-                    // 60 chars of the prompt; finally show "未命名任务".
+                    const isEmpty = task.message_count === 0;
+                    // Three states:
+                    //   1. user-named title: use it
+                    //   2. empty draft (no message yet): show "💭 新对话草稿"
+                    //      so it's clearly a placeholder the user can
+                    //      delete in one click
+                    //   3. otherwise: first 60 chars of the user prompt
                     const label =
                       task.title?.trim() ||
-                      (task.user_prompt?.trim()
-                        ? task.user_prompt.length > 60
-                          ? `${task.user_prompt.slice(0, 60)}…`
-                          : task.user_prompt
-                        : "未命名任务");
+                      (isEmpty
+                        ? "💭 新对话草稿（未发送）"
+                        : task.user_prompt?.trim()
+                          ? task.user_prompt.length > 60
+                            ? `${task.user_prompt.slice(0, 60)}…`
+                            : task.user_prompt
+                          : "未命名任务");
                     const statusIcon =
                       task.status === "running"
                         ? "🟢"
                         : task.status === "pending"
-                          ? "🟡"
+                          ? isEmpty
+                            ? "💭"
+                            : "🟡"
                           : task.status === "error"
                             ? "🔴"
                             : "⚪";

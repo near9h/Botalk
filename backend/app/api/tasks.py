@@ -3,7 +3,7 @@
 Wire-facing 改用 group_public_id；run 行内部 group_id 仍是整数。
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.runs import _resolve_visible_group
@@ -80,7 +80,12 @@ async def list_tasks(
         raise HTTPException(status_code=404, detail="group not found")
     result = await session.execute(
         select(Run)
-        .where(Run.group_id == group.id)
+        .where(
+            Run.group_id == group.id,
+            # Hide empty drafts that were never sent — they pile up when the
+            # user opens the group page but never actually types a message.
+            ~and_(Run.status == "pending", Run.message_count == 0),
+        )
         .order_by(Run.id.desc())
         .limit(limit)
     )
