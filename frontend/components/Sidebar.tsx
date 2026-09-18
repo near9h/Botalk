@@ -3,7 +3,19 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { CSSProperties, ReactNode, useEffect, useState } from "react";
-import { Avatar, avatarColor, IconButton, useToast } from "./ui";
+import {
+  Avatar,
+  avatarColor,
+  Button,
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  IconButton,
+  Input,
+  Label,
+  useToast,
+} from "./ui";
 import { SIDEBAR_EXPANDED_WIDTH, useSidebar } from "./SidebarContext";
 import { useI18n } from "@/lib/i18n";
 import { api, User } from "@/lib/api";
@@ -15,6 +27,11 @@ const NAV_KEYS: Array<{ href: string; key: string; icon: string }> = [
   { href: "/models", key: "nav.models", icon: "🧠" },
 ];
 
+const ADMIN_KEYS: Array<{ href: string; key: string; icon: string }> = [
+  { href: "/admin/users", key: "nav.adminUsers", icon: "👥" },
+  { href: "/admin/audit", key: "nav.adminAudit", icon: "📜" },
+];
+
 export function Sidebar() {
   const pathname = usePathname();
   const { collapsed, toggle, setCollapsed } = useSidebar();
@@ -22,6 +39,9 @@ export function Sidebar() {
   const router = useRouter();
   const toast = useToast();
   const [me, setMe] = useState<User | null>(null);
+  const [pwOpen, setPwOpen] = useState(false);
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwForm, setPwForm] = useState({ old: "", n1: "", n2: "" });
   const width = collapsed ? 64 : SIDEBAR_EXPANDED_WIDTH;
 
   useEffect(() => {
@@ -46,6 +66,37 @@ export function Sidebar() {
       router.replace("/login");
     } catch {
       /* ignore */
+    }
+  };
+
+  const changeMyPassword = async () => {
+    if (!me) return;
+    if (!pwForm.n1 || pwForm.n1.length < 8) {
+      toast.push({ title: "新密码至少 8 位", variant: "error" });
+      return;
+    }
+    if (pwForm.n1 !== pwForm.n2) {
+      toast.push({ title: "两次输入的新密码不一致", variant: "error" });
+      return;
+    }
+    setPwBusy(true);
+    try {
+      await api.changeUserPassword(me.id, {
+        old_password: pwForm.old,
+        new_password: pwForm.n1,
+      });
+      toast.push({
+        title: "密码已修改",
+        description: "下次登录请使用新密码",
+        variant: "success",
+      });
+      setPwForm({ old: "", n1: "", n2: "" });
+      setPwOpen(false);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.push({ title: "修改失败", description: msg, variant: "error" });
+    } finally {
+      setPwBusy(false);
     }
   };
 
@@ -177,6 +228,59 @@ export function Sidebar() {
         })}
       </nav>
 
+      {/* Admin section — 只 admin 可见 */}
+      {me?.role === "admin" && (
+        <>
+          {!collapsed && (
+            <div
+              style={{
+                marginTop: 16,
+                marginBottom: 4,
+                fontSize: 10,
+                fontWeight: 700,
+                color: "var(--fg-subtle)",
+                letterSpacing: 1,
+                textTransform: "uppercase",
+                paddingLeft: 12,
+              }}
+            >
+              🛡 管理
+            </div>
+          )}
+          <nav style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {ADMIN_KEYS.map((n) => {
+              const active = pathname?.startsWith(n.href);
+              const label = t(n.key);
+              return (
+                <Link
+                  key={n.href}
+                  href={n.href}
+                  title={collapsed ? label : undefined}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: collapsed ? 0 : 10,
+                    justifyContent: collapsed ? "center" : "flex-start",
+                    padding: collapsed ? "10px 0" : "9px 12px",
+                    borderRadius: 10,
+                    fontSize: 13,
+                    fontWeight: 500,
+                    color: active ? "var(--accent)" : "var(--fg-muted)",
+                    background: active ? "rgba(167, 139, 250, 0.10)" : "transparent",
+                    transition: "all var(--transition)",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                  }}
+                >
+                  <span style={{ fontSize: 16, flexShrink: 0 }}>{n.icon}</span>
+                  {!collapsed && <span>{label}</span>}
+                </Link>
+              );
+            })}
+          </nav>
+        </>
+      )}
+
       <div style={{ flex: 1 }} />
 
       {/* Expand button (collapsed mode) */}
@@ -265,7 +369,7 @@ export function Sidebar() {
                 gap: 10,
               }
         }
-        title={collapsed ? `${me?.username ?? t("sidebar.user")} · ${t("sidebar.userRole")}` : undefined}
+        title={collapsed ? me?.username ?? t("sidebar.user") : undefined}
         >
           <Avatar emoji="👤" size={32} color={avatarColor(me?.username ?? "me")} />
           {!collapsed && (
@@ -273,28 +377,101 @@ export function Sidebar() {
               <div style={{ fontSize: 12, fontWeight: 500 }}>
                 {me?.username ?? t("sidebar.user")}
               </div>
-              <div style={{ fontSize: 10, color: "var(--fg-subtle)" }}>{t("sidebar.userRole")}</div>
             </div>
           )}
           {!collapsed && me && (
-            <button
-              type="button"
-              onClick={logout}
-              title={t("sidebar.logout")}
+            <div
               style={{
-                border: "1px solid var(--border)",
-                background: "transparent",
-                color: "var(--fg-muted)",
-                borderRadius: 6,
-                padding: "4px 8px",
-                fontSize: 11,
-                cursor: "pointer",
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                marginLeft: 8,
               }}
             >
-              {t("sidebar.logout")}
-            </button>
+              <button
+                type="button"
+                onClick={() => setPwOpen(true)}
+                title="修改密码"
+                style={{
+                  border: "1px solid var(--border)",
+                  background: "transparent",
+                  color: "var(--fg-muted)",
+                  borderRadius: 6,
+                  padding: "4px 8px",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                🔑 修改密码
+              </button>
+              <button
+                type="button"
+                onClick={logout}
+                title={t("sidebar.logout")}
+                style={{
+                  border: "1px solid var(--border)",
+                  background: "transparent",
+                  color: "var(--fg-muted)",
+                  borderRadius: 6,
+                  padding: "4px 8px",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {t("sidebar.logout")}
+              </button>
+            </div>
           )}
         </div>
+
+      <Dialog open={pwOpen} onOpenChange={setPwOpen}>
+        <DialogContent>
+          <DialogHeader
+            title="修改密码"
+            description={`当前用户「${me?.username ?? ""}」自助修改`}
+            onClose={() => setPwOpen(false)}
+          />
+          <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
+            <div>
+              <Label>当前密码</Label>
+              <Input
+                type="password"
+                value={pwForm.old}
+                onChange={(e) => setPwForm({ ...pwForm, old: e.target.value })}
+                autoComplete="current-password"
+              />
+            </div>
+            <div>
+              <Label>新密码（至少 8 位）</Label>
+              <Input
+                type="password"
+                value={pwForm.n1}
+                onChange={(e) => setPwForm({ ...pwForm, n1: e.target.value })}
+                autoComplete="new-password"
+              />
+            </div>
+            <div>
+              <Label>确认新密码</Label>
+              <Input
+                type="password"
+                value={pwForm.n2}
+                onChange={(e) => setPwForm({ ...pwForm, n2: e.target.value })}
+                autoComplete="new-password"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setPwOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={changeMyPassword} disabled={pwBusy}>
+              {pwBusy ? "提交中…" : "保存"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </aside>
   );
 }

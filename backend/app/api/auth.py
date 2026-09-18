@@ -1,6 +1,10 @@
-"""Auth API: login, logout, register (only when user table empty), me."""
+"""Auth API: login, logout, register (only when user table empty), me.
+
+接入审计：login 成功/失败、logout、register。
+"""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -20,6 +24,7 @@ from app.auth import (
 from app.config import get_settings
 from app.db.models import User
 from app.db.session import get_session
+from app.services import audit as audit_service
 
 router = APIRouter()
 settings = get_settings()
@@ -37,9 +42,14 @@ class RegisterBody(BaseModel):
 
 
 class MeOut(BaseModel):
+    """Return current user detail (post RBAC)."""
+
     id: int
     username: str
-    email: str | None
+    display_name: str | None = None
+    email: str | None = None
+    role: str
+    status: str
 
 
 @router.post("/login")
@@ -47,26 +57,72 @@ async def login(
     body: LoginBody,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
+    ctx: Annotated[audit_service.AuditContext, Depends(audit_service.audit_ctx)],
 ) -> MeOut:
     result = await session.execute(
         select(User).where(User.username == body.username)
     )
     user = result.scalar_one_or_none()
-    if not user or not verify_password(body.password, user.password_hash):
-        # Same error for "no such user" and "wrong password" — avoid
-        # user-enumeration leaks.
+    # 同一错误信息：避免用户名枚举攻击
+    bad = (
+        not user
+            or not verify_password(body.password, user.password_hash)
+            or user.status == "disabled"
+        )
+    if bad:
+        await audit_service.log(
+            session,
+            ctx,
+            action="auth.login.fail",
+            target_type="auth",
+            target_id=body.username,
+            target_name=body.username,
+            status="failure",
+            detail={"reason": "bad_credentials_or_disabled"},
+        )
+        await session.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误",
         )
+    user.last_login_at = datetime.now(tz=timezone.utc)
     token = make_token(user.id)
     set_session_cookie(response, token)
-    return MeOut(id=user.id, username=user.username, email=user.email)
+    await audit_service.log(
+        session,
+        ctx,
+        action="auth.login",
+        target_type="user",
+        target_id=str(user.id),
+        target_name=user.username,
+    )
+    await session.commit()
+    return MeOut(
+        id=user.id,
+        username=user.username,
+        display_name=user.display_name,
+        email=user.email,
+        role=user.role,
+        status=user.status,
+    )
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict:
+async def logout(
+    response: Response,
+    ctx: Annotated[audit_service.AuditContext, Depends(audit_service.audit_ctx)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
     clear_session_cookie(response)
+    await audit_service.log(
+        session,
+        ctx,
+        action="auth.logout",
+        target_type="auth",
+        target_id=str(ctx.safe_actor()[0]) if ctx.actor else None,
+        target_name=ctx.safe_actor()[1],
+    )
+    await session.commit()
     return {"ok": True}
 
 
@@ -75,6 +131,7 @@ async def register(
     body: RegisterBody,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
+    ctx: Annotated[audit_service.AuditContext, Depends(audit_service.audit_ctx)],
 ) -> MeOut:
     """Only allowed when the users table is empty (i.e. first-run bootstrap)."""
     result = await session.execute(select(sa_func.count(User.id)))
@@ -88,12 +145,29 @@ async def register(
         username=body.username,
         email=body.email,
         password_hash=hash_password(body.password),
+        role="admin",  # 第一个用户默认是管理员
     )
     session.add(user)
+    await session.flush()
+    await audit_service.log(
+        session,
+        ctx,
+        action="auth.register",
+        target_type="user",
+        target_id=str(user.id),
+        target_name=user.username,
+    )
     await session.commit()
     await session.refresh(user)
     set_session_cookie(response, make_token(user.id))
-    return MeOut(id=user.id, username=user.username, email=user.email)
+    return MeOut(
+        id=user.id,
+        username=user.username,
+        display_name=user.display_name,
+        email=user.email,
+        role=user.role,
+        status=user.status,
+    )
 
 
 @router.get("/me")
@@ -102,4 +176,11 @@ async def me(
 ) -> MeOut | None:
     if user is None:
         return None
-    return MeOut(id=user.id, username=user.username, email=user.email)
+    return MeOut(
+        id=user.id,
+        username=user.username,
+        display_name=user.display_name,
+        email=user.email,
+        role=user.role,
+        status=user.status,
+    )

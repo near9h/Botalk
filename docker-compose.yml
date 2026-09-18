@@ -33,7 +33,9 @@ services:
       MINERU_API_KEY: ${MINERU_API_KEY:-}
       MINERU_MODEL_VERSION: ${MINERU_MODEL_VERSION:-vlm}
       UPLOAD_DIR: /data/uploads
-      AUTH_SECRET: ${AUTH_SECRET:-change-me-please-use-a-long-random-string}
+      # Generate once with: python -c "import secrets; print(secrets.token_urlsafe(64))"
+      # If unset, the backend refuses to start (see app/config.py get_settings).
+      AUTH_SECRET: ${AUTH_SECRET:-REPLACE_ME_WITH_OUTPUT_OF_python_-c_import_secrets\;_print\(secrets.token_urlsafe\(64\)\)}
       AUTH_BOOTSTRAP_USER: ${AUTH_BOOTSTRAP_USER:-admin}
       AUTH_BOOTSTRAP_PASSWORD: ${AUTH_BOOTSTRAP_PASSWORD:-admin}
       AUTH_DISABLED: ${AUTH_DISABLED:-false}

@@ -1,35 +1,46 @@
 """Conversation session (run/task) listing endpoints.
 
-A "task" is one user prompt plus the full multi-bot discussion it produced —
-the natural unit of "a session" in the chat history. The DB still calls this
-row a Run (see app.db.models.Run), but the user-facing concept is a task;
-the frontend talks to /api/tasks primarily and falls back to /api/runs for
-backwards compatibility.
-
-The `message_count` column is materialized on the runs table now, so we
-no longer need a per-row COUNT(*) — that used to dominate the query as
-history grew.
+Wire-facing 改用 `group_public_id`；普通用户不能查看不可见 group 的任务。
 """
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Run
+from app.auth import require_user
+from app.db.models import Group, Run, User
 from app.db.session import get_session
 from app.schemas import RunOut
+from app.services import audit as audit_service
 
 router = APIRouter()
 
 
+async def _resolve_visible_group(
+    session: AsyncSession, user: User, public_id: str
+) -> Group | None:
+    group = (
+        await session.execute(select(Group).where(Group.public_id == public_id))
+    ).scalar_one_or_none()
+    if not group:
+        return None
+    if user.role != "admin" and group.scope != "system" and group.owner_id != user.id:
+        return None
+    return group
+
+
 @router.get("", response_model=list[RunOut])
 async def list_runs(
-    group_id: int = Query(..., description="Group ID to list sessions for"),
+    group_public_id: str = Query(..., description="Group public id"),
     limit: int = Query(default=100, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
+    user: User = Depends(require_user),
 ) -> list[RunOut]:
+    group = await _resolve_visible_group(session, user, group_public_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="group not found")
     result = await session.execute(
         select(Run)
-        .where(Run.group_id == group_id)
+        .where(Run.group_id == group.id)
         .order_by(Run.id.desc())
         .limit(limit)
     )

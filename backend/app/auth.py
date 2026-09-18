@@ -47,7 +47,16 @@ def make_token(user_id: int) -> str:
 
 def decode_token(token: str) -> int | None:
     try:
-        payload = jwt.decode(token, settings.auth_secret, algorithms=["HS256"])
+        payload = jwt.decode(
+            token,
+            settings.auth_secret,
+            algorithms=["HS256"],
+            # Require exp claim explicitly — PyJWT ≥ 2.4 already does this by
+            # default, but the explicit `require` makes the contract
+            # self-documenting and survives any future PyJWT version bump
+            # that loosens the default.
+            options={"require": ["exp"]},
+        )
         return int(payload["sub"])
     except Exception:  # noqa: BLE001
         return None
@@ -65,6 +74,7 @@ async def ensure_bootstrap_user(session: AsyncSession) -> None:
         username=settings.auth_bootstrap_user,
         email=f"{settings.auth_bootstrap_user}@local",
         password_hash=hash_password(settings.auth_bootstrap_password),
+        role="admin",  # bootstrap 永远是 admin
     )
     session.add(user)
     await session.commit()
@@ -94,6 +104,18 @@ async def require_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="not authenticated",
+        )
+    return user
+
+
+async def require_admin(
+    user: Annotated[User, Depends(require_user)],
+) -> User:
+    """需要管理员权限。普通用户访问 admin-only 接口时返回 403。"""
+    if user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限",
         )
     return user
 

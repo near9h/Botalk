@@ -42,6 +42,18 @@ async def get_group_with_members(
     return result.scalar_one_or_none()
 
 
+async def get_group_by_public_id(
+    session: AsyncSession, public_id: str
+) -> Group | None:
+    """Wire-facing public_id → Group（含 members）"""
+    result = await session.execute(
+        select(Group)
+        .options(selectinload(Group.members))
+        .where(Group.public_id == public_id)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_bots_in_order(
     session: AsyncSession, group: Group
 ) -> list[Bot]:

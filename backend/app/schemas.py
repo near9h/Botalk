@@ -16,7 +16,10 @@ class BotBase(BaseModel):
 
 
 class BotCreate(BotBase):
-    pass
+    # admin 显式传 scope='system' 创建系统共享 bot；普通用户忽略此字段，强制 'user'
+    scope: str | None = Field(default=None, pattern="^(system|user)$")
+    # 创建时直接标记为公开；只对 owner 生效（system bot 由 migration 控制）
+    is_public: bool = False
 
 
 class BotUpdate(BaseModel):
@@ -27,6 +30,10 @@ class BotUpdate(BaseModel):
     model: str | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)
     params: dict[str, Any] | None = None
+    # 公开分享：owner 可设为 true 把私有 bot 分享给所有用户可见（但只有 owner/admin 能改/删）
+    is_public: bool | None = None
+    # is_system / is_protected / scope / owner_id 不可通过 PATCH 改；只能由 admin
+    # 通过独立的"提升/降级"接口或 SQL 改。
     # is_system is intentionally NOT updatable here — system identity is
     # seeded by the DB migration and can only be flipped via SQL.
 
@@ -36,6 +43,10 @@ class BotOut(BotBase):
     id: int
     is_system: bool = False
     is_protected: bool = False
+    # RBAC 扩展
+    owner_id: int | None = None
+    scope: str = "user"
+    is_public: bool = False
     created_at: datetime
 
 
@@ -48,11 +59,27 @@ class GroupBase(BaseModel):
 
 class GroupCreate(GroupBase):
     bot_ids: list[int] = Field(default_factory=list)
+    # admin 可显式传 scope='system' 创建共享群组；普通用户忽略，强制 'user'
+    scope: str | None = Field(default=None, pattern="^(system|user)$")
+
+
+class GroupUpdate(BaseModel):
+    """PATCH body for /api/groups/{public_id}. All fields optional."""
+
+    name: str | None = Field(default=None, max_length=128)
+    description: str | None = None
+    mode: str | None = Field(default=None, pattern="^(round_robin|auto|manual)$")
+    max_rounds: int | None = Field(default=None, ge=1, le=50)
 
 
 class GroupOut(GroupBase):
     model_config = ConfigDict(from_attributes=True)
-    id: int
+    # 注意：这里**故意**没有 `id: int` 字段。整数 id 仅作内部主键，
+    # wire 出参只暴露 public_id。
+    public_id: str
+    # RBAC 扩展
+    owner_id: int | None = None
+    scope: str = "user"
     created_at: datetime
     bot_ids: list[int] = Field(default_factory=list)
 
@@ -100,7 +127,7 @@ class RunOut(BaseModel):
 class RunCreate(BaseModel):
     """Body for POST /api/tasks — opens a fresh empty task in a group."""
 
-    group_id: int
+    group_public_id: str = Field(min_length=1, max_length=16)
     title: str | None = Field(default=None, max_length=128)
 
 
@@ -112,7 +139,7 @@ class RunUpdate(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    group_id: int
+    group_public_id: str = Field(min_length=1, max_length=16)
     prompt: str
     max_rounds: int | None = None
     mode: str | None = Field(default=None, pattern="^(round_robin|auto|manual)$")
@@ -180,3 +207,90 @@ class BotSkillOut(BaseModel):
     skill: SkillOut
     config: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
+
+
+# ─────────────────────── users (admin) ───────────────────────
+
+
+class UserOut(BaseModel):
+    """Returned by /api/users and /api/auth/me."""
+
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    username: str
+    display_name: str | None = None
+    email: str | None = None
+    role: str
+    status: str
+    created_by_id: int | None = None
+    last_login_at: datetime | None = None
+    created_at: datetime
+
+
+class UserCreate(BaseModel):
+    """Admin-only. 创建用户，password 为空则由服务端生成 12 位随机密码并返回。"""
+
+    username: str = Field(min_length=1, max_length=64)
+    password: str | None = Field(default=None, min_length=8, max_length=256)
+    display_name: str | None = Field(default=None, max_length=128)
+    email: str | None = Field(default=None, max_length=256)
+    role: str = Field(default="user", pattern="^(admin|user)$")
+
+
+class UserResetPasswordOut(BaseModel):
+    username: str
+    new_password: str  # 仅生成时返回一次
+
+
+class UserUpdate(BaseModel):
+    display_name: str | None = Field(default=None, max_length=128)
+    email: str | None = Field(default=None, max_length=256)
+    role: str | None = Field(default=None, pattern="^(admin|user)$")
+    status: str | None = Field(default=None, pattern="^(active|disabled)$")
+
+
+class UserChangePassword(BaseModel):
+    """Self-service password change.
+
+    The caller must be the user themselves (or an admin). `old_password`
+    is required for self-service so a hijacker who only has the session
+    cookie still can't rotate the password. Admins using this endpoint
+    against a different user may pass `old_password=""` to skip the
+    check (the admin-only `reset-password` endpoint is the right tool
+    when you don't know the current password).
+    """
+
+    old_password: str = Field(default="", max_length=256)
+    new_password: str = Field(min_length=8, max_length=256)
+
+
+# ─────────────────────── audit ───────────────────────
+
+
+class AuditLogOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    occurred_at: datetime
+    actor_id: int | None = None
+    actor_name: str
+    actor_role: str
+    action: str
+    target_type: str
+    target_id: str | None = None
+    target_name: str | None = None
+    ip: str | None = None
+    user_agent: str | None = None
+    status: str
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class AuditLogsPage(BaseModel):
+    items: list[AuditLogOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class AuditCleanupResult(BaseModel):
+    deleted: int
+    retention_days: int

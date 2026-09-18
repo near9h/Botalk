@@ -1,4 +1,4 @@
-"""Web search tool — Tavily → Serper → DuckDuckGo HTML fallback."""
+"""Web search tool -- Tavily -> Serper -> DuckDuckGo HTML fallback."""
 from __future__ import annotations
 
 import html as html_lib

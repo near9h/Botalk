@@ -1,6 +1,6 @@
 """Document generation tool.
 
-`generate_document(markdown, filename, title=None)` — turn a piece of
+`generate_document(markdown, filename, title=None)` -- turn a piece of
 markdown into a real `.docx` (using an in-tree pandoc binary), persist it
 as an attachment, and return a download link so the frontend can render
 a download card in the chat bubble.

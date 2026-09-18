@@ -5,7 +5,7 @@ import { Button, EmptyState, Input, Tabs, useToast } from "@/components/ui";
 import { PageShell } from "@/components/Sidebar";
 import { BotCard } from "@/components/BotCard";
 import { BotFormDialog } from "@/components/BotFormDialog";
-import { api, Bot, vendorOfModelId } from "@/lib/api";
+import { api, Bot, User, vendorOfModelId } from "@/lib/api";
 import { BOT_TEMPLATES } from "@/lib/botTemplates";
 
 const VENDORS = [
@@ -26,11 +26,17 @@ export default function BotsPage() {
   const [vendor, setVendor] = useState("all");
   const [editing, setEditing] = useState<Bot | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [me, setMe] = useState<User | null>(null);
 
   const refresh = async () => {
     setLoading(true);
     try {
-      setBots(await api.listBots());
+      const [list, mine] = await Promise.all([
+        api.listBots(),
+        api.me().catch(() => null),
+      ]);
+      setBots(list);
+      setMe(mine);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       toast.push({ title: "加载机器人失败", description: msg, variant: "error" });
@@ -118,6 +124,16 @@ export default function BotsPage() {
 
   const vendorCount = (v: string) =>
     v === "all" ? bots.length : bots.filter((b) => vendorOfModelId(b.model) === v).length;
+
+  // System bots are always editable by everyone (they're meant to be
+  // tweaked in this UI). Otherwise a bot is only writable by its owner
+  // or an admin — public bots created by other users are read-only here.
+  const canEdit = (b: Bot) => {
+    if (b.is_system) return true;
+    if (me?.role === "admin") return true;
+    if (me && b.owner_id === me.id) return true;
+    return false;
+  };
 
   return (
     <PageShell>
@@ -243,17 +259,24 @@ export default function BotsPage() {
               gap: 14,
             }}
           >
-            {filtered.map((b) => (
-              <BotCard
-                key={b.id}
-                bot={b}
-                onEdit={() => {
-                  setEditing(b);
-                  setDialogOpen(true);
-                }}
-                onDelete={() => deleteBot(b)}
-              />
-            ))}
+            {filtered.map((b) => {
+              const editable = canEdit(b);
+              return (
+                <BotCard
+                  key={b.id}
+                  bot={b}
+                  onEdit={
+                    editable
+                      ? () => {
+                          setEditing(b);
+                          setDialogOpen(true);
+                        }
+                      : undefined
+                  }
+                  onDelete={editable ? () => deleteBot(b) : undefined}
+                />
+              );
+            })}
           </div>
         )}
       </div>

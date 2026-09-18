@@ -2,7 +2,7 @@
 
 Each tool is an async function `handler(args: dict, config: dict) -> str`
 returning a Markdown/HTML string. The dispatcher catches all errors and
-returns them as text so a tool failure never crashes the discussion loop —
+returns them as text so a tool failure never crashes the discussion loop --
 the LLM sees the error and can adapt.
 """
 from __future__ import annotations

@@ -106,7 +106,7 @@ export function GroupWizard({
       });
       onCreated?.(g);
       close();
-      router.push(`/group/${g.id}`);
+      router.push(`/group/${g.public_id}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       toast.push({ title: "创建失败", description: msg, variant: "error" });
@@ -116,7 +116,7 @@ export function GroupWizard({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} maxWidth={720}>
       <DialogContent>
         <DialogHeader
           title="新建群组"
@@ -124,12 +124,13 @@ export function GroupWizard({
           onClose={close}
         />
 
-        {/* Stepper */}
+        {/* Stepper —— 4 列等宽网格，确保第 4 步「确认」一定可见 */}
         <div
           style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
+            display: "grid",
+            gridTemplateColumns: "repeat(4, 1fr)",
+            alignItems: "start",
+            gap: 0,
             margin: "20px 0 24px",
             fontSize: 12,
           }}
@@ -142,62 +143,61 @@ export function GroupWizard({
                 key={label}
                 style={{
                   display: "flex",
+                  flexDirection: "column",
                   alignItems: "center",
-                  flex: i < 3 ? 1 : 0,
                   minWidth: 0,
+                  position: "relative",
                 }}
               >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    flexShrink: 0,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 24,
-                      height: 24,
-                      flexShrink: 0,
-                      borderRadius: "50%",
-                      background: i <= step ? "var(--accent)" : "var(--surface-2)",
-                      color: i <= step ? "white" : "var(--fg-muted)",
-                      fontSize: 11,
-                      fontWeight: 600,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      border: i <= step ? "none" : "1px solid var(--border-strong)",
-                      transition: "all var(--transition)",
-                    }}
-                  >
-                    {i < step ? "✓" : i + 1}
-                  </div>
-                  <span
-                    style={{
-                      fontWeight: active ? 600 : 400,
-                      color: i <= step ? "var(--fg)" : "var(--fg-subtle)",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {label}
-                  </span>
-                </div>
+                {/* 连接线：在 badge 后面延展到下一列起点 */}
                 {i < 3 && (
                   <div
                     style={{
-                      flex: 1,
-                      minWidth: 12,
+                      position: "absolute",
+                      top: 11, // 居中 badge (badge 22 高)
+                      left: "calc(50% + 12px)",
+                      right: "calc(-50% + 12px)",
                       height: 2,
-                      background: i < step ? "var(--accent)" : "var(--border)",
-                      marginLeft: 8,
-                      borderRadius: 2,
+                      background: done ? "var(--accent)" : "var(--border)",
                       transition: "background var(--transition)",
                     }}
                   />
                 )}
+                <div
+                  style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: "50%",
+                    background: i <= step ? "var(--accent)" : "var(--surface-2)",
+                    color: i <= step ? "white" : "var(--fg-muted)",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    border: i <= step ? "none" : "1px solid var(--border-strong)",
+                    transition: "all var(--transition)",
+                    position: "relative",
+                    zIndex: 1,
+                  }}
+                >
+                  {done ? "✓" : i + 1}
+                </div>
+                <span
+                  style={{
+                    marginTop: 6,
+                    fontWeight: active ? 600 : 400,
+                    color: i <= step ? "var(--fg)" : "var(--fg-subtle)",
+                    fontSize: 11,
+                    textAlign: "center",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    maxWidth: "100%",
+                  }}
+                >
+                  {label}
+                </span>
               </div>
             );
           })}

@@ -15,7 +15,7 @@ export function Composer({
   onSend: (prompt: string, attachments: Attachment[]) => void;
   onStop?: () => void;
   streaming: boolean;
-  groupId?: number;
+  groupId?: string;
 }) {
   const [value, setValue] = useState("");
   const [mentionOpen, setMentionOpen] = useState(false);

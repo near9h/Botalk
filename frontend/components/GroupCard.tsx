@@ -35,7 +35,7 @@ export function GroupCard({
 
   return (
     <Link
-      href={`/group/${group.id}`}
+      href={`/group/${group.public_id}`}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       className="glass"
@@ -88,6 +88,7 @@ export function GroupCard({
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
         <Badge variant={mode.variant}>{mode.label}</Badge>
         <Badge variant="info">最多 {group.max_rounds} 轮</Badge>
+        {group.scope === "system" && <Badge variant="info">系统共享</Badge>}
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>

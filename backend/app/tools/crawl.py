@@ -1,4 +1,4 @@
-"""Web crawl tool — Firecrawl → direct httpx fetch + HTML→Markdown extraction."""
+"""Web crawl tool -- Firecrawl -> direct httpx fetch + HTML->Markdown extraction."""
 from __future__ import annotations
 
 import re

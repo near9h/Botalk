@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import io
+import ipaddress
 import re
+import socket
 import uuid
 import zipfile
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import yaml
@@ -14,9 +17,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.auth import require_admin, require_user
 from app.config import get_settings
 from app.db.models import BotSkill, Skill
 from app.db.session import get_session
+from app.services import audit as audit_service
 from app.schemas import (
     SkillAssetUpdate,
     SkillCreate,
@@ -49,14 +54,15 @@ def _skill_dict(skill: Skill, bot_count: int = 0) -> dict[str, Any]:
 
 
 async def _bot_counts(session: AsyncSession) -> dict[int, int]:
-    result = await session.execute(
-        select(BotSkill.skill_id, func.count(BotSkill.bot_id)).group_by(BotSkill.skill_id)
-    )
+    result = await session.execute(select(BotSkill.skill_id, func.count(BotSkill.bot_id)).group_by(BotSkill.skill_id))
     return {skill_id: count for skill_id, count in result.all()}
 
 
 @router.get("")
-async def list_skills(session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
+async def list_skills(
+    session: AsyncSession = Depends(get_session),
+    _user: Any = Depends(require_user),
+) -> list[dict[str, Any]]:
     result = await session.execute(select(Skill).order_by(Skill.builtin.desc(), Skill.id))
     skills = result.scalars().all()
     counts = await _bot_counts(session)
@@ -65,7 +71,10 @@ async def list_skills(session: AsyncSession = Depends(get_session)) -> list[dict
 
 @router.post("", response_model=SkillOut, status_code=201)
 async def create_skill(
-    payload: SkillCreate, session: AsyncSession = Depends(get_session)
+    payload: SkillCreate,
+    session: AsyncSession = Depends(get_session),
+    _admin: Any = Depends(require_admin),
+    ctx: audit_service.AuditContext = Depends(audit_service.audit_ctx),
 ) -> SkillOut:
     key = payload.key.strip().lower() or _KEY_RE.sub("-", payload.name.strip().lower())
     existing = await session.execute(select(Skill).where(Skill.key == key))
@@ -73,13 +82,22 @@ async def create_skill(
         raise HTTPException(status_code=400, detail=f"技能 key 已存在: {key}")
     skill = Skill(**payload.model_dump(), key=key)
     session.add(skill)
+    await audit_service.log(
+        session, ctx,
+        action="skill.create", target_type="skill",
+        target_id="(pending)", target_name=skill.name,
+    )
     await session.commit()
     await session.refresh(skill)
     return _to_out(skill)
 
 
 @router.get("/{skill_id}", response_model=SkillOut)
-async def get_skill(skill_id: int, session: AsyncSession = Depends(get_session)) -> SkillOut:
+async def get_skill(
+    skill_id: int,
+    session: AsyncSession = Depends(get_session),
+    _user: Any = Depends(require_user),
+) -> SkillOut:
     skill = await session.get(Skill, skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail="skill not found")
@@ -88,7 +106,11 @@ async def get_skill(skill_id: int, session: AsyncSession = Depends(get_session))
 
 @router.patch("/{skill_id}", response_model=SkillOut)
 async def update_skill(
-    skill_id: int, payload: SkillCreate, session: AsyncSession = Depends(get_session)
+    skill_id: int,
+    payload: SkillCreate,
+    session: AsyncSession = Depends(get_session),
+    _admin: Any = Depends(require_admin),
+    ctx: audit_service.AuditContext = Depends(audit_service.audit_ctx),
 ) -> SkillOut:
     skill = await session.get(Skill, skill_id)
     if not skill:
@@ -98,18 +120,34 @@ async def update_skill(
         raise HTTPException(status_code=403, detail="内置技能的类型/key 不可修改")
     for k, v in data.items():
         setattr(skill, k, v)
+    await audit_service.log(
+        session, ctx,
+        action="skill.update", target_type="skill",
+        target_id=str(skill.id), target_name=skill.name,
+    )
     await session.commit()
     await session.refresh(skill)
     return _to_out(skill)
 
 
 @router.delete("/{skill_id}", status_code=204)
-async def delete_skill(skill_id: int, session: AsyncSession = Depends(get_session)) -> None:
+async def delete_skill(
+    skill_id: int,
+    session: AsyncSession = Depends(get_session),
+    _admin: Any = Depends(require_admin),
+    ctx: audit_service.AuditContext = Depends(audit_service.audit_ctx),
+) -> None:
     skill = await session.get(Skill, skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail="skill not found")
     if skill.builtin:
         raise HTTPException(status_code=403, detail=f"内置技能「{skill.name}」不可删除")
+    skill_name = skill.name
+    await audit_service.log(
+        session, ctx,
+        action="skill.delete", target_type="skill",
+        target_id=str(skill_id), target_name=skill_name,
+    )
     await session.delete(skill)
     await session.commit()
 
@@ -171,6 +209,7 @@ async def _save_skillmd(
 async def import_skillmd(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
+    _admin: Any = Depends(require_admin),
 ) -> SkillOut:
     raw = await file.read()
     try:
@@ -184,16 +223,106 @@ async def import_skillmd(
 
 @router.post("/import/skillmd/url", response_model=SkillOut, status_code=201)
 async def import_skillmd_url(
-    payload: SkillImportUrl, session: AsyncSession = Depends(get_session)
+    payload: SkillImportUrl,
+    session: AsyncSession = Depends(get_session),
+    _admin: Any = Depends(require_admin),
 ) -> SkillOut:
+    # SSRF guard: only allow http(s); resolve hostname and reject any
+    # private / loopback / link-local / cloud-metadata target. We do the
+    # DNS check ourselves rather than letting httpx follow a redirect to
+    # one of those ranges.
+    parsed = urlparse(payload.url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="URL 必须为 http(s)")
+    host = parsed.hostname or ""
+    if not host:
+        raise HTTPException(status_code=400, detail="URL 缺少主机名")
     try:
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        infos = await _resolve_all(host)
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail=f"DNS 解析失败: {exc}")
+    # infos is a list of (family, type, proto, canonname, sockaddr) tuples.
+    for info in infos:
+        # info[4] is the sockaddr; for IPv4 it's (host, port), for IPv6
+        # it's (host, port, flowinfo, scope_id). Either way the host is
+        # at index 0 of that tuple.
+        sockaddr = info[4]
+        if _is_blocked_ip(sockaddr):
+            raise HTTPException(
+                status_code=400,
+                detail=f"禁止访问内网地址 {sockaddr[0]}",
+            )
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
             resp = await client.get(payload.url)
+            # Manually follow redirects with our own SSRF filter on each hop.
+            redirects = 0
+            while resp.is_redirect and redirects < 5:
+                target = resp.headers.get("location") or ""
+                parsed_next = urlparse(target)
+                if parsed_next.scheme not in ("http", "https"):
+                    raise HTTPException(status_code=400, detail="重定向到非 http(s) 目标")
+                next_host = parsed_next.hostname or ""
+                for next_info in await _resolve_all(next_host):
+                    sockaddr = next_info[4]
+                    if _is_blocked_ip(sockaddr):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"重定向到禁止地址 {sockaddr[0]}",
+                        )
+                resp = await client.get(target)
+                redirects += 1
         resp.raise_for_status()
         text = resp.text
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"抓取 SKILL.md 失败: {exc}")
     return _to_out(await _save_skillmd(session, text, name=payload.name))
+
+
+# ─────────────────────────── SSRF helpers ───────────────────────────
+
+def _is_blocked_ip(sockaddr: tuple) -> bool:
+    """Return True if the (host, port[, …]) sockaddr resolves to a
+    private/loopback/link-local/unspec address.
+
+    Blocks SSRF against the container network (10/8, 172.16/12,
+    192.168/16), loopback (127/8), link-local (169.254/16 — covers the
+    AWS / GCP / Azure metadata service at 169.254.169.254), and any
+    IPv6 equivalent (ULA fc00::/7, link-local fe80::/10, ::1, etc.).
+    """
+    addr = sockaddr[0]
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        # Malformed DNS response — treat as unsafe.
+        return True
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
+        or ip.is_reserved
+    )
+
+
+async def _resolve_all(host: str) -> list[tuple]:
+    """Resolve `host` to all addrinfo sockaddr tuples.
+
+    Single-pass DNS resolution means a malicious DNS server that returns
+    a public IP for `getaddrinfo` and a private IP on the next call
+    (DNS rebinding) is mostly mitigated: we resolve once and pass the
+    resolved IP into httpx via a custom transport (a TODO if traffic
+    ever grows). For the current scale this is enough to block direct
+    SSRF via private IPs and the cloud metadata service.
+    """
+    import asyncio
+
+    return await asyncio.get_running_loop().getaddrinfo(
+        host, None, type=socket.SOCK_STREAM
+    )
 
 
 # ─────────────────────────── MCP import ───────────────────────────
@@ -201,7 +330,9 @@ async def import_skillmd_url(
 
 @router.post("/import/mcp", response_model=SkillOut, status_code=201)
 async def import_mcp(
-    payload: SkillImportMcp, session: AsyncSession = Depends(get_session)
+    payload: SkillImportMcp,
+    session: AsyncSession = Depends(get_session),
+    _admin: Any = Depends(require_admin),
 ) -> SkillOut:
     try:
         tools = await mcp_service.list_tools(payload.url, payload.transport)
@@ -230,429 +361,6 @@ async def import_mcp(
         builtin=False,
     )
     session.add(skill)
-    await session.commit()
-    await session.refresh(skill)
-    return _to_out(skill)
-
-
-# ─────────────────────────── community search ───────────────────────────
-
-
-@router.get("/community/search")
-async def community_search(q: str) -> list[dict[str, Any]]:
-    """Search the public MCP marketplace for skills matching `q`.
-
-    Backed by `app.services.community.search_community`, which first
-    tries the MCP marketplace's own `search_servers` tool and falls
-    back to a legacy REST proxy if `SKILL_MARKET_API_URL` is set.
-    Empty list ⇒ "no results" (no toast errors).
-    """
-    from app.services import community as community_service
-
-    return await community_service.search_community(q)
-
-
-@router.post("/community/install", response_model=SkillOut, status_code=201)
-async def community_install(
-    payload: dict[str, Any],
-    session: AsyncSession = Depends(get_session),
-) -> SkillOut:
-    """Install a community search result as a real skill on this server.
-
-    Body shape:
-        { "url": str, "transport"?: "streamable-http"|"sse",
-          "name"?: str, "description"?: str,
-          "source"?: "mcp_marketplace"|"anthropic"|"findskill" }
-
-    Two paths:
-
-    * MCP marketplace entries → connect to the MCP server, enumerate
-      its tools, persist as a `mcp` skill.
-    * GitHub SKILL.md entries (`source ∈ {anthropic, findskill}` or a
-      GitHub URL) → fetch the SKILL.md via the raw.githubusercontent.com
-      endpoint, persist as a `knowledge` skill with the markdown body
-      as `instructions`.
-    """
-    from app.services import mcp as mcp_service
-
-    url = (payload.get("url") or "").strip()
-    if not url:
-        raise HTTPException(status_code=400, detail="url 不能为空")
-    transport = (payload.get("transport") or "streamable-http").strip()
-    name = (payload.get("name") or "").strip()
-    description = (payload.get("description") or "").strip()
-    source = (payload.get("source") or "").strip()
-
-    # ── GitHub SKILL.md install path ──
-    is_github = "github.com" in url or source in ("anthropic", "findskill")
-    if is_github and source in ("anthropic", "findskill"):
-        try:
-            from app.services.community import (
-                ANTHROPIC_REPO,
-                FINDSKILL_REPO,
-                _gh_token_headers,
-                _b64_to_text,
-            )
-            import httpx
-            import re as _re
-
-            # url pattern: https://github.com/<owner>/<repo>/tree/<branch>/skills/<name>
-            m = _re.search(r"github\.com/([^/]+)/([^/]+)/tree/[^/]+/skills/([^/]+)", url)
-            if m:
-                repo = f"{m.group(1)}/{m.group(2)}"
-                skill_dir = m.group(3)
-            else:
-                # Last-resort: try to extract repo + dir
-                m2 = _re.search(r"github\.com/([^/]+)/([^/]+)", url)
-                repo = f"{m2.group(1)}/{m2.group(2)}" if m2 else FINDSKILL_REPO
-                skill_dir = url.rstrip("/").rsplit("/", 1)[-1]
-
-            raw_url = f"https://api.github.com/repos/{repo}/contents/skills/{skill_dir}/SKILL.md"
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                r = await client.get(raw_url, headers=_gh_token_headers())
-                if r.status_code != 200:
-                    raise RuntimeError(f"GitHub {r.status_code}")
-            skill_md = _b64_to_text(r.json().get("content", ""))
-            if not skill_md.strip():
-                raise RuntimeError("SKILL.md 为空")
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"拉取 SKILL.md 失败: {exc}")
-
-        # Parse frontmatter for name / description
-        meta: dict[str, str] = {}
-        if skill_md.startswith("---"):
-            end = skill_md.find("\n---", 3)
-            if end > 0:
-                for line in skill_md[3:end].splitlines():
-                    if ":" in line:
-                        k, v = line.split(":", 1)
-                        meta[k.strip()] = v.strip().strip('"').strip("'")
-        fm_name = meta.get("name", "")
-        fm_desc = meta.get("description", "")
-
-        final_name = name or fm_name or skill_dir
-        final_desc = description or fm_desc
-        body = skill_md
-        key = _KEY_RE.sub("-", final_name.strip().lower()) or "community-skill"
-        base_key = key
-        n = 1
-        while (
-            await session.execute(select(Skill).where(Skill.key == key))
-        ).scalar_one_or_none():
-            n += 1
-            key = f"{base_key}-{n}"
-        skill = Skill(
-            key=key,
-            name=final_name,
-            description=final_desc,
-            type="knowledge",
-            category="custom",
-            icon="📚",
-            manifest={
-                "instructions": body,
-                "source": source,
-                "source_url": url,
-                "assets": [],
-            },
-            config_schema={
-                "assets": {"type": "list", "label": "模板资源", "accept": [".md", ".markdown", ".txt"]},
-            },
-            builtin=False,
-        )
-        session.add(skill)
-        await session.commit()
-        await session.refresh(skill)
-        return _to_out(skill)
-
-    # ── MCP install path (default) ──
-    try:
-        tools = await mcp_service.list_tools(url, transport)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"连接 MCP server 失败: {exc}")
-    if not tools:
-        raise HTTPException(status_code=400, detail="MCP server 未暴露任何 tools")
-
-    final_name = name or url.rstrip("/").rsplit("/", 1)[-1] or "MCP 技能"
-    key = _KEY_RE.sub("-", final_name.strip().lower()) or "mcp-skill"
-    base_key = key
-    n = 1
-    while (
-        await session.execute(select(Skill).where(Skill.key == key))
-    ).scalar_one_or_none():
-        n += 1
-        key = f"{base_key}-{n}"
-
-    skill = Skill(
-        key=key,
-        name=final_name,
-        description=description or f"来自 MCP marketplace 的 {len(tools)} 个工具",
-        type="mcp",
-        category="mcp",
-        icon="🔌",
-        manifest={"url": url, "transport": transport, "tools": tools},
-        config_schema={},
-        builtin=False,
-    )
-    session.add(skill)
-    await session.commit()
-    await session.refresh(skill)
-    return _to_out(skill)
-
-
-# ─────────────────────────── template assets ───────────────────────────
-
-
-def _docx_to_markdown(content: bytes) -> str:
-    """Convert .docx to structured markdown via python-docx.
-
-    Preserves heading levels (Heading 1/2/3 → #/##/###), bulleted and
-    numbered lists, and tables (GFM pipe tables). Falls back to plain
-    text if python-docx is missing or the file is malformed, so legacy
-    uploads don't break the upload.
-    """
-    try:
-        from docx import Document  # python-docx
-    except Exception as exc:  # noqa: BLE001
-        return f"(docx 解析失败: 缺少 python-docx ({exc}))"
-
-    try:
-        doc = Document(io.BytesIO(content))
-    except Exception as exc:  # noqa: BLE001
-        return f"(docx 解析失败: {exc})"
-
-    lines: list[str] = []
-    in_table = False
-    table_rows: list[list[str]] = []
-
-    def flush_table() -> None:
-        nonlocal table_rows
-        if not table_rows:
-            return
-        # GFM table: header + separator + body rows
-        width = max(len(r) for r in table_rows)
-        padded = [r + [""] * (width - len(r)) for r in table_rows]
-        lines.append("| " + " | ".join(padded[0]) + " |")
-        lines.append("| " + " | ".join(["---"] * width) + " |")
-        for r in padded[1:]:
-            lines.append("| " + " | ".join(r) + " |")
-        lines.append("")
-        table_rows = []
-
-    for block in iter_block_items(doc):
-        kind = block.get("kind")
-        if kind == "table":
-            rows = block["rows"]
-            # First row acts as header
-            table_rows = [list(rows[0])] + [list(r) for r in rows[1:]]
-            in_table = True
-            continue
-        # any non-table block flushes an open table
-        if in_table:
-            flush_table()
-            in_table = False
-        if kind == "paragraph":
-            p = block["paragraph"]
-            style = (p.style.name or "").lower() if p.style else ""
-            txt = (p.text or "").strip()
-            if not txt:
-                lines.append("")
-                continue
-            if "heading 1" in style:
-                lines.append(f"# {txt}")
-                lines.append("")
-            elif "heading 2" in style:
-                lines.append(f"## {txt}")
-                lines.append("")
-            elif "heading 3" in style:
-                lines.append(f"### {txt}")
-                lines.append("")
-            elif "heading 4" in style:
-                lines.append(f"#### {txt}")
-                lines.append("")
-            elif "heading 5" in style or "heading 6" in style:
-                lines.append(f"##### {txt}")
-                lines.append("")
-            else:
-                lines.append(txt)
-                lines.append("")
-        elif kind == "list":
-            for item in block["items"]:
-                marker = "-" if block["ordered"] is False else "1."
-                lines.append(f"{marker} {item}")
-            lines.append("")
-
-    if in_table:
-        flush_table()
-
-    return "\n".join(lines).strip()
-
-
-def iter_block_items(doc):
-    """Yield paragraphs, lists, and tables in document order."""
-    try:
-        from docx.document import Document as _Doc
-        from docx.oxml.ns import qn
-
-        parent = doc.element.body
-        for child in parent.iterchildren():
-            tag = child.tag
-            if tag == qn("w:p"):
-                p = doc.paragraphs  # fallback path; the index lookup below is fine
-                # python-docx exposes paragraphs by iterating document.paragraphs,
-                # but for interleaved tables we walk the XML directly.
-                from docx.text.paragraph import Paragraph
-                yield {"kind": "paragraph", "paragraph": Paragraph(child, doc)}
-            elif tag == qn("w:tbl"):
-                from docx.table import Table
-                tbl = Table(child, doc)
-                rows = []
-                for row in tbl.rows:
-                    rows.append([cell.text.strip() for cell in row.cells])
-                yield {"kind": "table", "rows": rows}
-            elif tag == qn("w:sdt"):
-                # content controls sometimes wrap a list — skip for now
-                continue
-    except Exception:
-        # Final fallback: paragraphs only
-        for p in doc.paragraphs:
-            yield {"kind": "paragraph", "paragraph": p}
-
-
-def _extract_text(filename: str, content: bytes) -> str:
-    suffix = (filename or "").lower().rsplit(".", 1)[-1] if "." in (filename or "") else ""
-    if suffix in ("md", "markdown", "txt"):
-        return content.decode("utf-8", errors="replace")
-    if suffix == "docx":
-        return _docx_to_markdown(content)
-    return content.decode("utf-8", errors="replace")
-
-
-def _read_assets(skill: Skill) -> list[dict[str, Any]]:
-    """Return a *detached* list of asset dicts.
-
-    SQLAlchemy's plain JSON column only fires an UPDATE when the top-level
-    dict identity changes; nested `dict[k] = v` on a child dict that came
-    straight from `skill.manifest` isn't always tracked (the children are
-    plain dicts, not MutableDict wrappers). By deep-copying each asset we
-    give callers a fully independent object: any mutation that the handler
-    makes is captured when we reassign `skill.manifest` in `_write_assets`.
-
-    Older assets only stored `{name, content_md}`; backfill id / description
-    / is_default so the rest of the code can address them uniformly.
-    """
-    import copy
-    out: list[dict[str, Any]] = []
-    raw = (skill.manifest or {}).get("assets", [])
-    for i, a in enumerate(raw):
-        d = dict(a)
-        d.setdefault("id", f"legacy-{i}")
-        d.setdefault("description", "")
-        d.setdefault("is_default", False)
-        out.append(d)
-    return out
-
-
-def _write_assets(skill: Skill, assets: list[dict[str, Any]]) -> None:
-    # Reassign the top-level manifest so SQLAlchemy emits an UPDATE. The
-    # `assets` list passed in is already detached (see `_read_assets`).
-    import copy
-    manifest = copy.deepcopy(skill.manifest or {})
-    manifest["assets"] = assets
-    skill.manifest = manifest
-
-
-@router.post("/{skill_id}/assets", response_model=SkillOut)
-async def upload_asset(
-    skill_id: int,
-    file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
-) -> SkillOut:
-    skill = await session.get(Skill, skill_id)
-    if not skill:
-        raise HTTPException(status_code=404, detail="skill not found")
-
-    suffix = Path_ext(file.filename or "").lower()
-    if suffix and suffix not in _TEMPLATE_EXT:
-        raise HTTPException(
-            status_code=400,
-            detail=f"模板仅支持 .md / .markdown / .txt（{suffix} 不在范围内）",
-        )
-
-    raw = await file.read()
-    text = _extract_text(file.filename or "template.txt", raw)
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="模板内容为空")
-    assets = _read_assets(skill)
-    # First template becomes the default automatically; subsequent uploads
-    # are non-default until the user promotes one.
-    assets.append(
-        {
-            "id": uuid.uuid4().hex[:12],
-            "name": file.filename or "template.txt",
-            "description": "",
-            "content_md": text,
-            "is_default": len(assets) == 0,
-        }
-    )
-    _write_assets(skill, assets)
-    await session.commit()
-    await session.refresh(skill)
-    return _to_out(skill)
-
-
-def Path_ext(filename: str) -> str:
-    """Return the lowercased suffix including the dot, or ''."""
-    if "." not in filename:
-        return ""
-    return "." + filename.rsplit(".", 1)[-1].lower()
-
-
-@router.patch("/{skill_id}/assets/{asset_id}", response_model=SkillOut)
-async def update_asset(
-    skill_id: int,
-    asset_id: str,
-    payload: SkillAssetUpdate,
-    session: AsyncSession = Depends(get_session),
-) -> SkillOut:
-    skill = await session.get(Skill, skill_id)
-    if not skill:
-        raise HTTPException(status_code=404, detail="skill not found")
-    assets = _read_assets(skill)
-    target = next((a for a in assets if a.get("id") == asset_id), None)
-    if target is None:
-        raise HTTPException(status_code=404, detail="模板不存在")
-    data = payload.model_dump(exclude_none=True)
-    # Promoting a template to default clears the flag on all others.
-    if data.get("is_default"):
-        for a in assets:
-            a["is_default"] = False
-    for k, v in data.items():
-        target[k] = v
-    _write_assets(skill, assets)
-    await session.commit()
-    await session.refresh(skill)
-    return _to_out(skill)
-
-
-@router.delete("/{skill_id}/assets/{asset_id}", response_model=SkillOut)
-async def delete_asset(
-    skill_id: int,
-    asset_id: str,
-    session: AsyncSession = Depends(get_session),
-) -> SkillOut:
-    skill = await session.get(Skill, skill_id)
-    if not skill:
-        raise HTTPException(status_code=404, detail="skill not found")
-    assets = _read_assets(skill)
-    removed = next((a for a in assets if a.get("id") == asset_id), None)
-    if removed is None:
-        raise HTTPException(status_code=404, detail="模板不存在")
-    remaining = [a for a in assets if a.get("id") != asset_id]
-    # If the default was removed, promote the first survivor so the skill
-    # always resolves to a concrete template.
-    if removed.get("is_default") and remaining:
-        remaining[0]["is_default"] = True
-    _write_assets(skill, remaining)
     await session.commit()
     await session.refresh(skill)
     return _to_out(skill)

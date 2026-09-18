@@ -7,10 +7,13 @@ import { api, User } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 
 /**
- * 4SAPI-style login window. The left panel is now an *animated* terminal:
- * a live typing cursor + sequential frames that mimic a real API call
- * (curl request → thinking spinner → 200 OK). The right panel is the
- * simplified sign-in form (no OAuth).
+ * Login window with two panels:
+ *   - Left: a compact, professional group-chat feed. Four team-role bots
+ *     (需求分析师 / 研发工程师 / 测试工程师 / 项目经理) take turns posting
+ *     business messages, separated by a "正在输入…" indicator. Avatars share
+ *     a single brand accent (no rainbow, no emoji) so the product reads as a
+ *     serious team-collaboration tool rather than a toy. Pure DOM/CSS, no GIF.
+ *   - Right: the simplified sign-in form (no OAuth).
  *
  * Background image lives in /public/login/bg.jpg (bundled at build time,
  * so the page renders without external requests).
@@ -125,7 +128,7 @@ export default function LoginPage() {
           gridTemplateColumns: "minmax(0, 1.1fr) minmax(0, 1fr)",
         }}
       >
-        {/* Left: animated terminal */}
+        {/* Left: animated group-chat feed */}
         <div
           className="glass-strong"
           style={{
@@ -136,7 +139,7 @@ export default function LoginPage() {
             flexDirection: "column",
           }}
         >
-          <ChromeBar title="auth@botgroup: ~/login" />
+          <ChromeBar title="BotGroup · Team Collaboration" />
           <AnimatedTerminal />
         </div>
 
@@ -280,49 +283,8 @@ export default function LoginPage() {
       </div>
 
       <style jsx global>{`
-        @keyframes blink {
-          0%, 49% { opacity: 1; }
-          50%, 100% { opacity: 0; }
-        }
-        @keyframes progress {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(400%); }
-        }
-        @keyframes dots {
-          0%, 20% { content: ''; }
-          40% { content: '.'; }
-          60% { content: '..'; }
-          80%, 100% { content: '...'; }
-        }
-        .cursor-blink::after {
-          content: '▍';
-          display: inline-block;
-          color: var(--accent);
-          margin-left: 2px;
-          animation: blink 1s steps(1) infinite;
-          font-weight: 400;
-        }
-        .loading-dots::after {
-          content: '...';
-          animation: dots 1.4s steps(1) infinite;
-        }
-        .progress-bar {
-          position: relative;
-          height: 2px;
-          background: rgba(167, 139, 250, 0.15);
-          border-radius: 2px;
-          overflow: hidden;
-        }
-        .progress-bar::before {
-          content: '';
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: 25%;
-          height: 100%;
-          background: linear-gradient(90deg, transparent, var(--accent), transparent);
-          animation: progress 1.6s linear infinite;
-        }
+        /* Global accent tokens — kept here so any page-level override
+         * (e.g. reduced motion) can target the same selector. */
       `}</style>
     </div>
   );
@@ -391,183 +353,290 @@ function ChromeBar({ title }: { title: string }) {
 }
 
 /**
- * Animated terminal — drives a multi-stage "story":
- *  1. Idle prompt
- *  2. User types the curl command (typewriter)
- *  3. Request body is sent (typing…)
- *  4. Thinking/progress spinner + status bar
- *  5. 200 OK with the JSON response
- * Then loops back with the same or a similar demo.
- *
- * No GIF needed — pure CSS keyframes + state machine.
+ * Professional group-chat feed: four team-role bots take turns speaking.
+ * Each message accumulates like a real transcript, with a "typing…"
+ * indicator shown for the next speaker in between. The whole sequence
+ * loops. All avatars use one brand accent for a unified, business look.
  */
+type ChatMsg = {
+  id: string;
+  name: string;
+  role: string;
+  initial: string;
+  text: string;
+  time: string;
+};
+
+const SCRIPT: ChatMsg[] = [
+  {
+    id: "ba",
+    name: "Business Analyst",
+    role: "BA",
+    initial: "B",
+    text: "Scope confirmed — 3 core modules in this iteration.",
+    time: "09:41",
+  },
+  {
+    id: "dev",
+    name: "Developer",
+    role: "Dev",
+    initial: "D",
+    text: "API design done, submitting for integration today.",
+    time: "09:42",
+  },
+  {
+    id: "qa",
+    name: "QA Engineer",
+    role: "QA",
+    initial: "Q",
+    text: "Test cases ready, branch coverage at 98%.",
+    time: "09:44",
+  },
+  {
+    id: "pm",
+    name: "Project Manager",
+    role: "PM",
+    initial: "P",
+    text: "Timeline synced — please track the milestones.",
+    time: "09:45",
+  },
+];
+
+const STEP_MS = 1800; // base interval per state
+const TOTAL_STEPS = 8; // 4 shows + 3 typing pauses + 1 full-transcript hold
+
 function AnimatedTerminal() {
-  const STAGES = [
-    { delay: 600, kind: "prompt" as const },
-    { delay: 900, kind: "request" as const },
-    { delay: 600, kind: "headers" as const },
-    { delay: 400, kind: "blank" as const },
-    { delay: 1200, kind: "thinking" as const },
-    { delay: 600, kind: "response" as const },
-    { delay: 2400, kind: "loop" as const },
-  ];
-  const TOTAL = STAGES.reduce((a, s) => a + s.delay, 0);
+  const [step, setStep] = useState(0);
 
-  const [tick, setTick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => (t + 1) % TOTAL), 100);
+    const id = setInterval(
+      () => setStep((s) => (s + 1) % TOTAL_STEPS),
+      STEP_MS,
+    );
     return () => clearInterval(id);
-  }, [TOTAL]);
+  }, []);
 
-  // Calculate which stage we're in based on tick.
-  let acc = 0;
-  let stageIdx = 0;
-  let stageProgress = 0;
-  for (let i = 0; i < STAGES.length; i++) {
-    if (tick < acc + STAGES[i].delay) {
-      stageIdx = i;
-      stageProgress = (tick - acc) / STAGES[i].delay;
-      break;
-    }
-    acc += STAGES[i].delay;
+  // Map the step counter to (visibleCount, typing).
+  let visibleCount: number;
+  let typing = false;
+  if (step <= 6) {
+    visibleCount = Math.floor(step / 2) + 1;
+    typing = step % 2 === 1;
+  } else {
+    visibleCount = SCRIPT.length; // step 7: hold the full transcript for a beat
   }
 
-  // The typed characters grow over the stage window.
-  const stage = STAGES[stageIdx];
+  const visible = SCRIPT.slice(0, visibleCount);
+  const nextSpeaker = typing ? SCRIPT[visibleCount] : null;
 
   return (
     <div
       style={{
         position: "relative",
-        padding: "20px 22px",
-        fontFamily: '"JetBrains Mono", ui-monospace, monospace',
-        fontSize: 12.5,
-        lineHeight: 1.7,
-        color: "var(--fg)",
+        padding: "18px 20px",
         flex: 1,
         overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
       }}
     >
-      {/* Persistent prompt row */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <span style={{ color: "var(--accent)", fontWeight: 600 }}>$</span>
-        <TypedText
-          target={"curl -X POST /api/auth/login"}
-          progress={stageIdx > 0 ? 1 : stageProgress}
-          cursorVisible={stageIdx === 0}
-        />
+      {/* Group header */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 16,
+          paddingBottom: 12,
+          borderBottom: "1px solid var(--border)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 999,
+              background: "#22c55e",
+              boxShadow: "0 0 0 3px rgba(34, 197, 94, 0.15)",
+            }}
+          />
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--fg)" }}>
+            Team Collaboration
+          </span>
+          <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>
+            · {SCRIPT.length} members
+          </span>
+        </div>
+        <span
+          style={{
+            fontSize: 11,
+            color: "var(--fg-muted)",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          In progress
+        </span>
       </div>
 
-      {stageIdx >= 1 && (
-        <div
-          style={{
-            color: "var(--fg-muted)",
-            marginLeft: 16,
-            animation: "fade-in 0.2s",
-          }}
-        >
-          {"> "}H{"\u00A0"}<TypedText
-            target={"Content-Type: application/json"}
-            progress={stageIdx > 1 ? 1 : stageProgress}
-          />
-        </div>
-      )}
-      {stageIdx >= 2 && (
-        <div
-          style={{
-            color: "var(--fg-muted)",
-            marginLeft: 16,
-            animation: "fade-in 0.2s",
-          }}
-        >
-          {"> "}{"{"}"username{": \"admin\""}
-        </div>
-      )}
-      {stageIdx >= 3 && (
-        <div
-          style={{
-            color: "var(--fg-muted)",
-            marginLeft: 16,
-            animation: "fade-in 0.2s",
-          }}
-        >
-          {"\u00A0".repeat(11)}password{": \"••••••\""}
-        </div>
-      )}
-
-      {/* Thinking indicator */}
-      {stageIdx === 4 && (
-        <div
-          style={{
-            marginTop: 12,
-            animation: "fade-in 0.2s",
-            color: "var(--fg-muted)",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ color: "var(--accent)" }}>→</span>
-            <span>
-              authenticating<span className="loading-dots" />
-            </span>
-          </div>
-          <div style={{ marginTop: 8 }}>
-            <div className="progress-bar" />
-          </div>
-        </div>
-      )}
-
-      {/* Response */}
-      {stageIdx >= 5 && (
-        <div style={{ marginTop: 14, animation: "fade-in 0.3s" }}>
-          <div>
-            <span style={{ color: "#22c55e", fontWeight: 600 }}>
-              ← 200 OK
-            </span>{" "}
-            <span style={{ color: "var(--fg-subtle)" }}>12 ms</span>
-          </div>
-          <div style={{ color: "var(--fg-muted)", marginTop: 4 }}>
-            {"{"}"id": 1, "username":{" "}
-            <span style={{ color: "var(--accent)" }}>"admin"</span>, "token":
-            eyJhbGciOiJIUzI1NiI...
-            {"}"}
-          </div>
-          <div
-            style={{
-              marginTop: 12,
-              color: "var(--fg-subtle)",
-              fontStyle: "italic",
-            }}
-          >
-            # session cookie stored · redirecting →
-          </div>
-        </div>
-      )}
+      {/* Message feed */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {visible.map((m) => (
+          <MsgRow key={m.id} msg={m} />
+        ))}
+        {nextSpeaker && <TypingRow name={nextSpeaker.name} />}
+      </div>
 
       <style jsx>{`
-        @keyframes fade-in {
-          from { opacity: 0; transform: translateY(2px); }
-          to { opacity: 1; transform: translateY(0); }
+        @keyframes msg-in {
+          from { opacity: 0; transform: translateY(8px); }
+          to   { opacity: 1; transform: translateY(0); }
         }
+        @keyframes dot-blink {
+          0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+          30%           { opacity: 1;    transform: translateY(-2px); }
+        }
+        .typing-dots { display: inline-flex; gap: 3px; }
+        .typing-dots span {
+          width: 4px; height: 4px; border-radius: 999px;
+          background: var(--fg-muted);
+          animation: dot-blink 1.2s infinite;
+        }
+        .typing-dots span:nth-child(2) { animation-delay: 0.18s; }
+        .typing-dots span:nth-child(3) { animation-delay: 0.36s; }
       `}</style>
     </div>
   );
 }
 
-function TypedText({
-  target,
-  progress,
-  cursorVisible,
-}: {
-  target: string;
-  progress: number; // 0..1
-  cursorVisible?: boolean;
-}) {
-  const chars = Math.floor(progress * target.length);
-  const text = target.slice(0, chars);
+/** A single chat message row (avatar + name/role/time + bubble). */
+function MsgRow({ msg }: { msg: ChatMsg }) {
   return (
-    <span>
-      <span style={{ color: "#a78bfa" }}>{text || "\u00A0"}</span>
-      {cursorVisible && <span className="cursor-blink" />}
-    </span>
+    <div
+      style={{
+        display: "flex",
+        gap: 10,
+        alignItems: "flex-start",
+        animation: "msg-in 0.4s ease-out both",
+      }}
+    >
+      <MsgAvatar initial={msg.initial} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            marginBottom: 4,
+          }}
+        >
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--fg)" }}>
+            {msg.name}
+          </span>
+          <span style={roleTagStyle}>{msg.role}</span>
+          <span
+            style={{
+              marginLeft: "auto",
+              fontSize: 10.5,
+              color: "var(--fg-subtle)",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {msg.time}
+          </span>
+        </div>
+        <div style={bubbleStyle}>{msg.text}</div>
+      </div>
+    </div>
   );
 }
+
+/** "正在输入…" indicator for the bot about to speak. */
+function TypingRow({ name }: { name: string }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 10,
+        alignItems: "flex-start",
+        animation: "msg-in 0.4s ease-out both",
+      }}
+    >
+      <MsgAvatar initial="…" />
+      <div style={{ flex: 1 }}>
+        <div
+          style={{
+            fontSize: 12.5,
+            fontWeight: 600,
+            color: "var(--fg)",
+            marginBottom: 4,
+          }}
+        >
+          {name}
+        </div>
+        <div
+          style={{
+            ...bubbleStyle,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            color: "var(--fg-muted)",
+          }}
+        >
+          typing…
+          <span className="typing-dots">
+            <span />
+            <span />
+            <span />
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Brand-accent avatar — one color across all bots for a unified, professional look. */
+function MsgAvatar({ initial }: { initial: string }) {
+  return (
+    <div
+      style={{
+        width: 34,
+        height: 34,
+        borderRadius: 9,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "linear-gradient(135deg, var(--accent), var(--accent-2))",
+        color: "#fff",
+        fontSize: 13,
+        fontWeight: 600,
+        boxShadow: "0 2px 8px rgba(167, 139, 250, 0.28)",
+      }}
+    >
+      {initial}
+    </div>
+  );
+}
+
+const bubbleStyle: React.CSSProperties = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: 10,
+  padding: "9px 12px",
+  fontSize: 12.5,
+  lineHeight: 1.65,
+  color: "var(--fg)",
+  boxShadow: "0 1px 3px rgba(15, 23, 42, 0.06)",
+};
+
+const roleTagStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 500,
+  color: "var(--fg-muted)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
+  borderRadius: 999,
+  padding: "1px 7px",
+  lineHeight: 1.5,
+};

@@ -21,7 +21,7 @@ import { api, Attachment, AttachmentMeta, Bot, Group, Message, Run, Task, stream
 import { useI18n } from "@/lib/i18n";
 
 export default function GroupPage({ params }: { params: { id: string } }) {
-  const groupId = Number(params.id);
+  const groupId = String(params.id);
   const toast = useToast();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -226,7 +226,7 @@ export default function GroupPage({ params }: { params: { id: string } }) {
     const attachmentIds = attachments.map((a) => a.id);
     const rawAbort = streamChat(
       {
-        group_id: groupId,
+        group_public_id: groupId,
         prompt,
         attachment_ids: attachmentIds,
         // Append to the currently-active task. Prefer the share_token
@@ -851,7 +851,7 @@ export default function GroupPage({ params }: { params: { id: string } }) {
             // Force a full remount of the page so old group's messages
             // / active speaker / streaming state don't bleed into the
             // newly created group.
-            window.location.href = `/group/${g.id}`;
+            window.location.href = `/group/${g.public_id}`;
           }}
         />
 

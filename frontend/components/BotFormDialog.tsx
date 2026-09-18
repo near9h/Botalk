@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Button,
   Dialog,
@@ -10,10 +10,11 @@ import {
   Input,
   Label,
   Select,
+  SelectOption,
   Textarea,
   useToast,
 } from "@/components/ui";
-import { api, Bot, Skill, SkillAsset } from "@/lib/api";
+import { api, Bot, ModelInfo, Skill, SkillAsset } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 
 type Props = {
@@ -39,10 +40,19 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
   const [temperature, setTemperature] = useState(0.7);
   const [paramsText, setParamsText] = useState("{}");
 
+  const [models, setModels] = useState<ModelInfo[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<number[]>([]);
+  const [isPublic, setIsPublic] = useState(false);
+  const [me, setMe] = useState<{ id: number; role: "admin" | "user" } | null>(null);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // 拉一下当前用户信息，用来决定能不能改 is_public。
+  useEffect(() => {
+    if (!open) return;
+    api.me().then(setMe).catch(() => setMe(null));
+  }, [open]);
 
   // Reset / hydrate form when the target bot changes.
   useEffect(() => {
@@ -55,6 +65,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
       setModel(initial.model);
       setTemperature(initial.temperature);
       setParamsText(JSON.stringify(initial.params || {}, null, 2));
+      setIsPublic(Boolean(initial.is_public));
     } else {
       setName("");
       setEmoji("🤖");
@@ -63,23 +74,29 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
       setTemperature(0.7);
       setParamsText("{}");
       setSelectedSkillIds([]);
+      setIsPublic(false);
     }
   }, [open, initial]);
 
-  // Pull the available skill list once when the dialog opens. We also
-  // re-load the bot's currently-selected skills so the checkboxes reflect
-  // what was saved on the backend, not stale local state.
+  const canTogglePublic =
+    initial && (me?.role === "admin" || me?.id === initial.owner_id);
+
+  // Pull the available skill + model lists once when the dialog opens. We
+  // also re-load the bot's currently-selected skills so the checkboxes
+  // reflect what was saved on the backend, not stale local state.
   useEffect(() => {
     if (!open) return;
     let alive = true;
     (async () => {
       try {
-        const [all, current] = await Promise.all([
+        const [all, current, modelsResp] = await Promise.all([
           api.listSkills(),
           initial ? api.getBotSkills(initial.id) : Promise.resolve([]),
+          api.listModels().catch(() => null),
         ]);
         if (!alive) return;
         setSkills(all);
+        setModels(modelsResp?.data ?? []);
         const enabledIds = current
           .filter((bs) => bs.enabled)
           .map((bs) => bs.skill.id);
@@ -93,6 +110,18 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
       alive = false;
     };
   }, [open, initial, toast]);
+
+  const modelOptions = useMemo<SelectOption[]>(
+    () =>
+      models.map((m) => ({
+        value: m.id,
+        label: m.id,
+        description: `${m.vendor || m.owned_by || "unknown"} · ${
+          m.owned_by || ""
+        }`.replace(/·\s*$/, ""),
+      })),
+    [models],
+  );
 
   const toggleSkill = (id: number) => {
     setSelectedSkillIds((prev) =>
@@ -124,6 +153,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
       model,
       temperature,
       params: parsedParams,
+      is_public: canTogglePublic ? isPublic : undefined,
     };
     setSaving(true);
     try {
@@ -155,82 +185,164 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} maxWidth={900}>
       <DialogContent>
         <DialogHeader
           title={initial ? "编辑机器人" : "新建机器人"}
           description={initial ? "修改人设、模型、技能" : "起名 + 配技能，几秒钟就能拉进群"}
           onClose={() => onOpenChange(false)}
         />
-        <div style={{ display: "grid", gap: 16, marginTop: 20 }}>
-          <div style={{ display: "flex", gap: 12 }}>
-            <div style={{ width: 80 }}>
-              <Label>头像</Label>
-              <Input value={emoji} onChange={(e) => setEmoji(e.target.value)} maxLength={4} />
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+            gap: 24,
+            marginTop: 20,
+            alignItems: "stretch",
+          }}
+        >
+          {/* 左栏：基本信息 */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
+            <div style={{ display: "flex", gap: 12 }}>
+              <div style={{ width: 80 }}>
+                <Label>头像</Label>
+                <Input value={emoji} onChange={(e) => setEmoji(e.target.value)} maxLength={4} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <Label>名称</Label>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="如：高级开发"
+                />
+                {errors.name && (
+                  <div style={{ color: "var(--danger)", fontSize: 12, marginTop: 4 }}>
+                    {errors.name}
+                  </div>
+                )}
+              </div>
             </div>
-            <div style={{ flex: 1 }}>
-              <Label>名称</Label>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="如：高级开发"
+            <div>
+              <Label>人设</Label>
+              <Textarea
+                rows={6}
+                value={persona}
+                onChange={(e) => setPersona(e.target.value)}
+                placeholder="你是一位……"
               />
-              {errors.name && (
+            </div>
+            <div style={{ display: "flex", gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <Label>模型</Label>
+                {modelOptions.length > 0 ? (
+                  <Select
+                    value={model}
+                    onChange={setModel}
+                    options={modelOptions}
+                    placeholder="选择模型…"
+                    searchable
+                  />
+                ) : (
+                  <Input
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    placeholder="例如：gpt-4o-mini"
+                  />
+                )}
+                {modelOptions.length === 0 && (
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--fg-subtle)",
+                      marginTop: 4,
+                    }}
+                  >
+                    暂未拉到模型列表，可先手填，或到「模型」页刷新
+                  </div>
+                )}
+              </div>
+              <div style={{ width: 120 }}>
+                <Label>温度</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  value={temperature}
+                  onChange={(e) => setTemperature(Number(e.target.value))}
+                />
+              </div>
+            </div>
+            <div>
+              <Label>params (JSON)</Label>
+              <Textarea
+                rows={3}
+                value={paramsText}
+                onChange={(e) => setParamsText(e.target.value)}
+                placeholder='{"top_p": 0.9}'
+              />
+              {errors.params && (
                 <div style={{ color: "var(--danger)", fontSize: 12, marginTop: 4 }}>
-                  {errors.name}
+                  {errors.params}
                 </div>
               )}
             </div>
-          </div>
-          <div>
-            <Label>人设</Label>
-            <Textarea
-              rows={6}
-              value={persona}
-              onChange={(e) => setPersona(e.target.value)}
-              placeholder="你是一位……"
-            />
-          </div>
-          <div style={{ display: "flex", gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <Label>模型</Label>
-              <Input value={model} onChange={(e) => setModel(e.target.value)} />
-            </div>
-            <div style={{ width: 120 }}>
-              <Label>温度</Label>
-              <Input
-                type="number"
-                min={0}
-                max={2}
-                step={0.1}
-                value={temperature}
-                onChange={(e) => setTemperature(Number(e.target.value))}
-              />
-            </div>
-          </div>
-          <div>
-            <Label>params (JSON)</Label>
-            <Textarea
-              rows={3}
-              value={paramsText}
-              onChange={(e) => setParamsText(e.target.value)}
-              placeholder='{"top_p": 0.9}'
-            />
-            {errors.params && (
-              <div style={{ color: "var(--danger)", fontSize: 12, marginTop: 4 }}>
-                {errors.params}
+
+            {/* 公开分享：仅 owner / admin 可见，普通用户不可改 */}
+            {canTogglePublic && (
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: "var(--radius-sm)",
+                  border: "1px solid var(--border)",
+                  background: isPublic
+                    ? "rgba(34, 197, 94, 0.08)"
+                    : "var(--surface-2)",
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 10,
+                }}
+              >
+                <input
+                  id="bot-is-public"
+                  type="checkbox"
+                  checked={isPublic}
+                  onChange={(e) => setIsPublic(e.target.checked)}
+                  style={{ marginTop: 3 }}
+                />
+                <label
+                  htmlFor="bot-is-public"
+                  style={{ flex: 1, cursor: "pointer", fontSize: 13 }}
+                >
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                    🌍 公开给所有用户
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.5 }}>
+                    开启后，所有用户能在「机器人」页看到并使用这个 bot；
+                    但只有你（创建者）和管理员能修改或删除。
+                  </div>
+                </label>
               </div>
             )}
           </div>
 
-          {/* Skills — checkbox grid so multiple skills can be picked. */}
-          <div>
+          {/* 右栏：技能选项页 */}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+              minWidth: 0,
+              minHeight: 0,
+              borderLeft: "1px solid var(--border)",
+              paddingLeft: 24,
+            }}
+          >
             <div
               style={{
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                marginBottom: 8,
               }}
             >
               <Label>技能（多选）</Label>
@@ -240,19 +352,27 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
             </div>
             <div
               style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+                flex: 1,
+                minHeight: 0,
+                display: "flex",
+                flexDirection: "column",
                 gap: 8,
-                padding: 12,
+                padding: 10,
                 border: "1px solid var(--border)",
                 borderRadius: "var(--radius)",
-                maxHeight: 260,
                 overflowY: "auto",
                 background: "var(--surface-2)",
               }}
             >
               {skills.length === 0 ? (
-                <div style={{ gridColumn: "1 / -1", color: "var(--fg-subtle)", fontSize: 12, textAlign: "center", padding: 12 }}>
+                <div
+                  style={{
+                    color: "var(--fg-subtle)",
+                    fontSize: 12,
+                    textAlign: "center",
+                    padding: 24,
+                  }}
+                >
                   暂无技能，请先到「技能中心」启用。
                 </div>
               ) : (
@@ -288,7 +408,14 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                           <span style={{ fontSize: 16 }}>{s.icon || "🧩"}</span>
                           <span style={{ fontSize: 13, fontWeight: 500 }}>{s.name}</span>
                         </div>
-                        <div style={{ fontSize: 11, color: "var(--fg-subtle)", marginTop: 2, lineHeight: 1.4 }}>
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color: "var(--fg-subtle)",
+                            marginTop: 2,
+                            lineHeight: 1.4,
+                          }}
+                        >
                           {s.description || "（无描述）"}
                           {assetCount > 0 && (
                             <span style={{ marginLeft: 6, color: "var(--accent)" }}>

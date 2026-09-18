@@ -39,6 +39,14 @@ class Bot(Base):
     # these bots. Distinct from `is_system`, which marks backend-managed
     # bots (like the summarizer) that never surface as editable cards.
     is_protected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # RBAC: NULL owner_id + scope='system' = 全员共享（系统默认 bot）;
+    # owner_id + scope='user' = 用户私有。详见 .trae/documents/user-mgmt-audit-log-plan.md
+    owner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    scope: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
+    # 用户私有 bot 标记为公开后，所有普通用户可见（但只有 owner 可改）
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -48,10 +56,18 @@ class Group(Base):
     __tablename__ = "groups"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Wire-facing opaque random id (12 chars base62). 出参只暴露这个，
+    # 整数 id 仅作为内部主键与外键引用。
+    public_id: Mapped[str] = mapped_column(String(16), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     mode: Mapped[str] = mapped_column(String(16), default="auto", nullable=False)
     max_rounds: Mapped[int] = mapped_column(Integer, default=6, nullable=False)
+    # RBAC：普通用户只能看到 scope='system' OR owner_id == self.id
+    owner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    scope: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -191,8 +207,10 @@ class Attachment(Base):
 
 
 class User(Base):
-    """A login user. Currently single-user is the default; multi-user could
-    add an `is_admin` column and per-row policies later."""
+    """A login user. multi-user RBAC: role='admin'|'user', status='active'|'disabled'.
+
+    老部署升级时由 alembic 0013 把所有现存用户的 role 回填为 'admin'。
+    """
 
     __tablename__ = "users"
 
@@ -200,6 +218,14 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     email: Mapped[str | None] = mapped_column(String(256), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    # RBAC 元数据
+    role: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -262,3 +288,32 @@ class BotSkill(Base):
 
     bot: Mapped["Bot"] = relationship()
     skill: Mapped["Skill"] = relationship()
+
+
+class AuditLog(Base):
+    """全量写操作审计流水。
+
+    actor_name / actor_role 冗余存：user 被删后也能看到「谁」干的。
+    target_id 用字符串，允许 share_token / public_id / 数字 id 共存。
+    detail 存 diff / 错误堆栈 / 来源 trace_id（自由 JSON）。
+    """
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    actor_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_name: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    actor_role: Mapped[str] = mapped_column(String(16), nullable=False, default="user")
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    target_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="success")
+    detail: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)

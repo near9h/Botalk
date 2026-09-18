@@ -1,4 +1,4 @@
-"""Chart tool — build a self-contained ECharts HTML snippet.
+"""Chart tool -- build a self-contained ECharts HTML snippet.
 
 The result is wrapped in a fenced `echarts-html` block so the frontend can
 detect it and render it inside a sandboxed iframe (rather than trusting raw

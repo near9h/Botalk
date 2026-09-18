@@ -23,16 +23,25 @@ export type Bot = {
   // can't have their name/model changed.
   is_system: boolean;
   is_protected?: boolean;
+  // RBAC 扩展
+  owner_id?: number | null;
+  scope?: "system" | "user";
+  // 公开分享：私有 bot 标记后所有用户可见
+  is_public?: boolean;
   created_at: string;
 };
 
 export type Group = {
-  id: number;
+  // 注意：整数 id 不再对外暴露；只暴露 public_id。路由 / 状态用这个。
+  public_id: string;
   name: string;
   description: string | null;
   mode: "round_robin" | "auto" | "manual";
   max_rounds: number;
   bot_ids: number[];
+  // RBAC 扩展
+  owner_id?: number | null;
+  scope?: "system" | "user";
   created_at: string;
 };
 
@@ -131,7 +140,33 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await res.json()) as T;
 }
 
-export type User = { id: number; username: string; email: string | null };
+export type User = {
+  id: number;
+  username: string;
+  display_name?: string | null;
+  email: string | null;
+  role: "admin" | "user";
+  status: "active" | "disabled";
+  created_by_id?: number | null;
+  last_login_at?: string | null;
+  created_at: string;
+};
+
+export type AuditLog = {
+  id: number;
+  occurred_at: string;
+  actor_id: number | null;
+  actor_name: string;
+  actor_role: string;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  target_name: string | null;
+  ip: string | null;
+  user_agent: string | null;
+  status: "success" | "failure";
+  detail: Record<string, unknown>;
+};
 
 export const api = {
   // Auth
@@ -150,43 +185,118 @@ export const api = {
 
   listBots: () => request<Bot[]>("/api/bots"),
   // `is_protected` defaults server-side; allow callers to omit it.
-  createBot: (body: Omit<Bot, "id" | "created_at" | "is_system" | "is_protected">) =>
-    request<Bot>("/api/bots", { method: "POST", body: JSON.stringify(body) }),
+  createBot: (
+    body: Omit<Bot, "id" | "created_at" | "is_system" | "is_protected" | "owner_id" | "scope"> & {
+      scope?: "system" | "user";
+    },
+  ) => request<Bot>("/api/bots", { method: "POST", body: JSON.stringify(body) }),
   updateBot: (id: number, body: Partial<Bot>) =>
     request<Bot>(`/api/bots/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteBot: (id: number) =>
     request<void>(`/api/bots/${id}`, { method: "DELETE" }),
 
   listGroups: () => request<Group[]>("/api/groups"),
-  createGroup: (body: Omit<Group, "id" | "created_at">) =>
-    request<Group>("/api/groups", { method: "POST", body: JSON.stringify(body) }),
-  getGroup: (id: number) => request<Group>(`/api/groups/${id}`),
-  addMember: (groupId: number, botId: number) =>
-    request<Group>(`/api/groups/${groupId}/members/${botId}`, { method: "POST" }),
-  removeMember: (groupId: number, botId: number) =>
-    request<void>(`/api/groups/${groupId}/members/${botId}`, { method: "DELETE" }),
-  deleteGroup: (id: number) =>
-    request<void>(`/api/groups/${id}`, { method: "DELETE" }),
+  createGroup: (
+    body: Omit<Group, "public_id" | "created_at" | "owner_id" | "scope"> & {
+      scope?: "system" | "user";
+    },
+  ) =>
+    request<Group>("/api/groups", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getGroup: (publicId: string) => request<Group>(`/api/groups/${publicId}`),
+  updateGroup: (publicId: string, body: Partial<Group>) =>
+    request<Group>(`/api/groups/${publicId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  addMember: (publicId: string, botId: number) =>
+    request<Group>(`/api/groups/${publicId}/members/${botId}`, { method: "POST" }),
+  removeMember: (publicId: string, botId: number) =>
+    request<void>(`/api/groups/${publicId}/members/${botId}`, { method: "DELETE" }),
+  deleteGroup: (publicId: string) =>
+    request<void>(`/api/groups/${publicId}`, { method: "DELETE" }),
 
-  listMessages: (groupId: number, runId?: number) =>
+  listMessages: (groupPublicId: string, runId?: number) =>
     request<Message[]>(
-      `/api/messages?group_id=${groupId}${runId != null ? `&run_id=${runId}` : ""}`,
+      `/api/messages?group_public_id=${encodeURIComponent(groupPublicId)}${
+        runId != null ? `&run_id=${runId}` : ""
+      }`,
     ),
-  listRuns: (groupId: number) => request<Run[]>(`/api/runs?group_id=${groupId}`),
+  listRuns: (groupPublicId: string) =>
+    request<Run[]>(`/api/runs?group_public_id=${encodeURIComponent(groupPublicId)}`),
+  listTasks: (groupPublicId: string) =>
+    request<Run[]>(`/api/tasks?group_public_id=${encodeURIComponent(groupPublicId)}`),
+  openTask: (groupPublicId: string, title?: string) =>
+    request<Run>("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({ group_public_id: groupPublicId, title }),
+    }),
+
+  // 用户管理（admin-only）
+  listUsers: () => request<User[]>("/api/users"),
+  createUser: (body: {
+    username: string;
+    password?: string;
+    display_name?: string;
+    email?: string;
+    role?: "admin" | "user";
+  }) => request<User>("/api/users", { method: "POST", body: JSON.stringify(body) }),
+  updateUser: (id: number, body: Partial<Pick<User, "display_name" | "email" | "role" | "status">>) =>
+    request<User>(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  resetUserPassword: (id: number) =>
+    request<{ username: string; new_password: string }>(
+      `/api/users/${id}/reset-password`,
+      { method: "POST" },
+    ),
+  changeUserPassword: (
+    id: number,
+    body: { old_password: string; new_password: string },
+  ) =>
+    request<{ username: string; new_password: string }>(
+      `/api/users/${id}/change-password`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  enableUser: (id: number) =>
+    request<User>(`/api/users/${id}/enable`, { method: "POST" }),
+  disableUser: (id: number) =>
+    request<unknown>(`/api/users/${id}`, { method: "DELETE" }),
+
+  // 审计日志（admin-only）
+  listAuditLogs: (params: {
+    actor_id?: number;
+    action?: string;
+    target_type?: string;
+    target_id?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== "") q.set(k, String(v));
+    });
+    const qs = q.toString();
+    return request<{
+      items: AuditLog[];
+      total: number;
+      limit: number;
+      offset: number;
+    }>(`/api/audit/logs${qs ? `?${qs}` : ""}`);
+  },
+  getAuditStats: () =>
+    request<{ total_last_24h: number; by_action: Array<{ action: string; count: number }>; by_actor: Array<{ actor: string; count: number }> }>(
+      "/api/audit/stats",
+    ),
 
   // Tasks (user-facing alias of Runs): one task = one user turn + the
   // multi-bot reply it triggered. The chat UI binds every message to
   // exactly one task; "新会话" creates a new pending task, history
   // drawer reopens an existing task by id or share_token.
-  listTasks: (groupId: number) =>
-    request<Task[]>(`/api/tasks?group_id=${groupId}`),
   getTask: (taskIdOrToken: number | string) =>
     request<Task>(`/api/tasks/${taskIdOrToken}`),
-  openTask: (groupId: number, title?: string) =>
-    request<Task>("/api/tasks", {
-      method: "POST",
-      body: JSON.stringify({ group_id: groupId, title }),
-    }),
   renameTask: (taskIdOrToken: number | string, title: string) =>
     request<Task>(`/api/tasks/${taskIdOrToken}`, {
       method: "PATCH",
@@ -195,8 +305,11 @@ export const api = {
   deleteTask: (taskIdOrToken: number | string) =>
     request<void>(`/api/tasks/${taskIdOrToken}`, { method: "DELETE" }),
 
-  clearMessages: (groupId: number) =>
-    request<void>(`/api/messages?group_id=${groupId}`, { method: "DELETE" }),
+  clearMessages: (groupPublicId: string) =>
+    request<void>(
+      `/api/messages?group_public_id=${encodeURIComponent(groupPublicId)}`,
+      { method: "DELETE" },
+    ),
   listModels: () => request<{ data: ModelInfo[]; cached: boolean }>("/api/models"),
   testModel: (body: { model: string; prompt?: string; temperature?: number }) =>
     request<ModelTestResult>("/api/models/test", {
@@ -290,10 +403,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(ids),
     }),
-  uploadAttachment: (file: File, groupId?: number) => {
+  uploadAttachment: (file: File, groupPublicId?: string) => {
     const fd = new FormData();
     fd.append("file", file);
-    if (groupId != null) fd.append("group_id", String(groupId));
+    if (groupPublicId != null) fd.append("group_public_id", groupPublicId);
     return fetch(`${API_BASE}/api/attachments`, {
       method: "POST",
       body: fd,
@@ -359,7 +472,7 @@ export type ChatEvent =
 
 export function streamChat(
   body: {
-    group_id: number;
+    group_public_id: string;
     prompt: string;
     attachment_ids?: number[];
     // Append this prompt into an existing task instead of opening a new
@@ -430,6 +543,9 @@ export function streamChat(
       }
     })
     .catch((e) => {
+      // 用户点击「停止」触发的 abort 不是错误，避免显示
+      // "BodyStreamBuffer was aborted" 这类技术性提示。
+      if (ctrl.signal.aborted) return;
       onEvent("error", { error: e instanceof Error ? e.message : String(e) });
     });
   return () => ctrl.abort();

@@ -1,21 +1,18 @@
-"""Task (a.k.a. Run) CRUD endpoints — the user-facing unit of navigation.
+"""Task (a.k.a. Run) CRUD — user-facing navigation unit.
 
-A task is one user turn + the multi-bot discussion it triggers. Every
-chat conversation is bound to exactly one task: when the user clicks
-「新会话」 they create a brand-new pending task; when they pick an old
-thread from the history drawer they reopen an existing one.
-
-This router is the canonical frontend-facing API. The older /api/runs
-endpoints remain as a thin compatibility layer (same row format).
+Wire-facing 改用 group_public_id；run 行内部 group_id 仍是整数。
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Group, Run
+from app.api.runs import _resolve_visible_group
+from app.auth import require_user
+from app.db.models import Group, Run, User
 from app.db.session import get_session
 from app.orchestrator.runner import create_empty_task
 from app.schemas import RunCreate, RunOut, RunUpdate
+from app.services import audit as audit_service
 
 router = APIRouter()
 
@@ -36,12 +33,7 @@ def _to_out(r: Run) -> RunOut:
 
 
 async def _resolve_task(session: AsyncSession, key: str) -> Run | None:
-    """Look up a task by either its integer id or its share_token.
-
-    The URL parameter on /api/tasks/{task_id} accepts both forms so the
-    UI can pin to a shared link (`?task=<token>`) or call the legacy
-    integer-id endpoint. Identifies a numeric string and dispatches.
-    """
+    """Look up a task by either its integer id or its share_token."""
     if key.isdigit():
         return await session.get(Run, int(key))
     result = await session.execute(select(Run).where(Run.share_token == key))
@@ -50,38 +42,45 @@ async def _resolve_task(session: AsyncSession, key: str) -> Run | None:
 
 @router.post("", response_model=RunOut, status_code=status.HTTP_201_CREATED)
 async def open_task(
-    payload: RunCreate, session: AsyncSession = Depends(get_session)
+    payload: RunCreate,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(require_user),
+    ctx: audit_service.AuditContext = Depends(audit_service.audit_ctx),
 ) -> RunOut:
-    """Open a fresh empty task in a group.
-
-    The task is `pending` until the user actually sends the first
-    message; at that point the orchestrator flips it to `running` and
-    backfills the title from the prompt.
-    """
-    if not await session.get(Group, payload.group_id):
+    """Open a fresh empty task in a group."""
+    group = await _resolve_visible_group(session, user, payload.group_public_id)
+    if not group:
         raise HTTPException(status_code=404, detail="group not found")
-    run = await create_empty_task(session, payload.group_id)
+    run = await create_empty_task(session, group.id)
     if payload.title:
-        # Optional: caller can pre-name the task. Useful if the UI
-        # wants to surface "新对话" / "未命名任务" with a custom name.
         run.title = payload.title[:128]
-        await session.commit()
-        await session.refresh(run)
+    await audit_service.log(
+        session,
+        ctx,
+        action="task.create",
+        target_type="task",
+        target_id=run.share_token,
+        target_name=run.title or "(空任务)",
+        detail={"group_public_id": group.public_id},
+    )
+    await session.commit()
+    await session.refresh(run)
     return _to_out(run)
 
 
 @router.get("", response_model=list[RunOut])
 async def list_tasks(
-    group_id: int,
-    limit: int = 100,
+    group_public_id: str = Query(..., description="Group public id"),
+    limit: int = Query(default=100, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
+    user: User = Depends(require_user),
 ) -> list[RunOut]:
-    """List tasks for a group, newest first. Powers the history drawer."""
-    if not await session.get(Group, group_id):
+    group = await _resolve_visible_group(session, user, group_public_id)
+    if not group:
         raise HTTPException(status_code=404, detail="group not found")
     result = await session.execute(
         select(Run)
-        .where(Run.group_id == group_id)
+        .where(Run.group_id == group.id)
         .order_by(Run.id.desc())
         .limit(limit)
     )
@@ -90,12 +89,24 @@ async def list_tasks(
 
 @router.get("/{task_id}", response_model=RunOut)
 async def get_task(
-    task_id: str, session: AsyncSession = Depends(get_session)
+    task_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(require_user),
 ) -> RunOut:
     run = await _resolve_task(session, task_id)
     if not run:
         raise HTTPException(status_code=404, detail="task not found")
-    return _to_out(run)
+    # 校验所属 group 对当前 user 可见
+    grp = (
+        await session.execute(select(Group).where(Group.id == run.group_id))
+    ).scalar_one_or_none()
+    if grp and (
+        user.role == "admin"
+        or grp.scope == "system"
+        or grp.owner_id == user.id
+    ):
+        return _to_out(run)
+    raise HTTPException(status_code=404, detail="task not found")
 
 
 @router.patch("/{task_id}", response_model=RunOut)
@@ -103,13 +114,32 @@ async def rename_task(
     task_id: str,
     payload: RunUpdate,
     session: AsyncSession = Depends(get_session),
+    user: User = Depends(require_user),
+    ctx: audit_service.AuditContext = Depends(audit_service.audit_ctx),
 ) -> RunOut:
-    """Rename a task. Only the user-facing title is editable."""
     run = await _resolve_task(session, task_id)
     if not run:
         raise HTTPException(status_code=404, detail="task not found")
+    grp = (
+        await session.execute(select(Group).where(Group.id == run.group_id))
+    ).scalar_one_or_none()
+    if grp and not (
+        user.role == "admin"
+        or grp.scope == "system"
+        or grp.owner_id == user.id
+    ):
+        raise HTTPException(status_code=404, detail="task not found")
     if payload.title is not None:
         run.title = payload.title[:128]
+    await audit_service.log(
+        session,
+        ctx,
+        action="task.update",
+        target_type="task",
+        target_id=run.share_token,
+        target_name=run.title,
+        detail={"changed": ["title"]},
+    )
     await session.commit()
     await session.refresh(run)
     return _to_out(run)
@@ -117,15 +147,31 @@ async def rename_task(
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_task(
-    task_id: str, session: AsyncSession = Depends(get_session)
+    task_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(require_user),
+    ctx: audit_service.AuditContext = Depends(audit_service.audit_ctx),
 ) -> None:
-    """Delete a task and all its messages.
-
-    Unlike group deletion this is cheap and reversible-by-recording:
-    the user might want to wipe a single chat thread they regret.
-    """
     run = await _resolve_task(session, task_id)
     if not run:
         raise HTTPException(status_code=404, detail="task not found")
+    grp = (
+        await session.execute(select(Group).where(Group.id == run.group_id))
+    ).scalar_one_or_none()
+    if grp and not (
+        user.role == "admin"
+        or grp.scope == "system"
+        or grp.owner_id == user.id
+    ):
+        raise HTTPException(status_code=404, detail="task not found")
+    share_token = run.share_token
+    await audit_service.log(
+        session,
+        ctx,
+        action="task.delete",
+        target_type="task",
+        target_id=share_token,
+        target_name=run.title,
+    )
     await session.delete(run)
     await session.commit()

@@ -69,11 +69,31 @@ class Settings(BaseSettings):
     # local/self-hosted deployments where login isn't desired.
     auth_disabled: bool = False
 
+    # 审计日志保留天数；超过的记录会被后台清理任务删除。设为 0 关闭清理。
+    audit_retention_days: int = 90
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 
+_DEFAULT_SECRETS = frozenset({
+    "change-me-in-env-please-very-long-random-string",
+    "change-me-please-use-a-long-random-string",
+})
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    s = Settings()
+    # Fail fast on a hardcoded default JWT secret. Without this check, an
+    # operator who forgets to set AUTH_SECRET would silently issue tokens
+    # signed with a value published in the public source tree — anyone
+    # reading the repo could forge a session cookie.
+    if s.auth_secret in _DEFAULT_SECRETS and not s.auth_disabled:
+        raise RuntimeError(
+            "AUTH_SECRET is still set to the public default. "
+            "Override it in .env (or via the env var AUTH_SECRET). "
+            "To bypass auth entirely for local dev, set AUTH_DISABLED=true."
+        )
+    return s

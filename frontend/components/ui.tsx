@@ -264,10 +264,12 @@ export function Dialog({
   open,
   onOpenChange,
   children,
+  maxWidth = 560,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   children: ReactNode;
+  maxWidth?: number;
 }) {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
 
@@ -334,7 +336,7 @@ export function Dialog({
             className="glass-strong animate-scale-in"
             style={{
               position: "relative",
-              maxWidth: 560,
+              maxWidth,
               width: "100%",
               maxHeight: "calc(100vh - 48px)",
               overflow: "auto",

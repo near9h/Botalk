@@ -38,9 +38,9 @@ export default function HomePage() {
     refresh();
   }, []);
 
-  const deleteGroup = async (id: number) => {
+  const deleteGroup = async (publicId: string) => {
     try {
-      await api.deleteGroup(id);
+      await api.deleteGroup(publicId);
       toast.push({ title: t("common.toast.deleted"), variant: "success" });
       await refresh();
     } catch (e) {
@@ -103,7 +103,7 @@ export default function HomePage() {
         description: t("groups.fullTeam.toast.successDesc", { c: created, n: botIds.length }),
         variant: "success",
       });
-      router.push(`/group/${group.id}`);
+      router.push(`/group/${group.public_id}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       toast.push({ title: t("common.toast.createFail"), description: msg, variant: "error" });
@@ -173,10 +173,10 @@ export default function HomePage() {
           >
             {groups.map((g) => (
               <GroupCard
-                key={g.id}
+                key={g.public_id}
                 group={g}
                 bots={bots}
-                onDelete={() => deleteGroup(g.id)}
+                onDelete={() => deleteGroup(g.public_id)}
               />
             ))}
           </div>

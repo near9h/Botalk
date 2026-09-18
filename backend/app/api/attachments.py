@@ -12,9 +12,12 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.runs import _resolve_visible_group
+from app.auth import require_user
 from app.config import get_settings
-from app.db.models import Attachment, Group
+from app.db.models import Attachment, Group, User
 from app.db.session import get_session
+from app.services import audit as audit_service
 from app.services.mineru import parse_pdf
 
 logger = logging.getLogger(__name__)
@@ -70,8 +73,10 @@ def _ensure_upload_dir() -> Path:
 @router.post("")
 async def upload_attachment(
     file: UploadFile = File(...),
-    group_id: int | None = Form(default=None),
+    group_public_id: str | None = Form(default=None),
     session: AsyncSession = Depends(get_session),
+    user: User = Depends(require_user),
+    ctx: audit_service.AuditContext = Depends(audit_service.audit_ctx),
 ) -> dict:
     """Upload a PDF (or other MinerU-supported file) and synchronously parse it.
 
@@ -96,16 +101,16 @@ async def upload_attachment(
             ),
         )
 
-    # Validate group_id up front so we return a clean 400 instead of a
-    # generic 500 with a Postgres foreign-key traceback when the caller
-    # (e.g. a stale frontend cache) references a deleted group.
-    if group_id is not None:
-        grp = await session.get(Group, group_id)
+    # Validate group_public_id + 可见性检查（wire-facing 改字符串）
+    group_int_id: int | None = None
+    if group_public_id:
+        grp = await _resolve_visible_group(session, user, group_public_id)
         if grp is None:
             raise HTTPException(
                 status_code=400,
-                detail=f"group_id={group_id} does not exist; refresh the group list",
+                detail=f"group_public_id={group_public_id} 不可见或不存在",
             )
+        group_int_id = grp.id
 
     # Stream file to disk so we can size-check and survive a 200MB upload.
     upload_dir = _ensure_upload_dir()
@@ -143,7 +148,7 @@ async def upload_attachment(
         await file.close()
 
     att = Attachment(
-        group_id=group_id,
+        group_id=group_int_id,
         filename=file.filename or "upload",
         mime_type=mime,
         size_bytes=written,
@@ -152,6 +157,15 @@ async def upload_attachment(
         storage_path=str(dest),
     )
     session.add(att)
+    await audit_service.log(
+        session,
+        ctx,
+        action="attachment.upload",
+        target_type="attachment",
+        target_id=str(att.id),
+        target_name=att.filename,
+        detail={"size_bytes": att.size_bytes, "group_public_id": group_public_id},
+    )
     await session.commit()
     await session.refresh(att)
 
@@ -187,12 +201,43 @@ async def upload_attachment(
     return _serialize(att)
 
 
+async def _resolve_visible_attachment(
+    session: AsyncSession, user: User, att_id: int
+) -> Attachment | None:
+    """Return the attachment iff its parent group is visible to `user`.
+
+    An attachment is visible iff:
+      * the user is admin,
+      * OR its parent group is `system` scope (shared with everyone),
+      * OR its parent group is owned by the user.
+
+    For unattached attachments (group_id is NULL — e.g. ad-hoc uploads
+    not yet bound to a session) we fall back to admin-only.
+    """
+    att = await session.get(Attachment, att_id)
+    if not att:
+        return None
+    if att.group_id is None:
+        return att if user.role == "admin" else None
+    grp = await session.get(Group, att.group_id)
+    if grp is None:
+        return None
+    if (
+        user.role == "admin"
+        or grp.scope == "system"
+        or grp.owner_id == user.id
+    ):
+        return att
+    return None
+
+
 @router.get("/{att_id}")
 async def get_attachment(
-    att_id: int, session: AsyncSession = Depends(get_session)
+    att_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(require_user),
 ) -> dict:
-    result = await session.execute(select(Attachment).where(Attachment.id == att_id))
-    att = result.scalar_one_or_none()
+    att = await _resolve_visible_attachment(session, user, att_id)
     if not att:
         raise HTTPException(status_code=404, detail="attachment not found")
     return _serialize(att, include_content=True)
@@ -200,7 +245,9 @@ async def get_attachment(
 
 @router.get("/{att_id}/download")
 async def download_attachment(
-    att_id: int, session: AsyncSession = Depends(get_session)
+    att_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(require_user),
 ) -> Response:
     """Stream the attachment's bytes as a file download.
 
@@ -212,7 +259,7 @@ async def download_attachment(
     """
     import urllib.parse
 
-    att = await session.get(Attachment, att_id)
+    att = await _resolve_visible_attachment(session, user, att_id)
     if not att:
         raise HTTPException(status_code=404, detail="attachment not found")
 
@@ -239,12 +286,23 @@ async def download_attachment(
 
 @router.get("")
 async def list_attachments(
-    group_id: int | None = None,
+    group_public_id: str | None = None,
     session: AsyncSession = Depends(get_session),
+    user: User = Depends(require_user),
 ) -> list[dict]:
+    """List attachments, optionally filtered by `group_public_id`.
+
+    普通用户传一个不可见的 group_public_id 会拿到空列表。
+    """
+    group_int_id: int | None = None
+    if group_public_id:
+        grp = await _resolve_visible_group(session, user, group_public_id)
+        if grp is None:
+            return []
+        group_int_id = grp.id
     q = select(Attachment)
-    if group_id is not None:
-        q = q.where(Attachment.group_id == group_id)
+    if group_int_id is not None:
+        q = q.where(Attachment.group_id == group_int_id)
     q = q.order_by(Attachment.created_at.desc())
     result = await session.execute(q)
     return [_serialize(a, include_content=False) for a in result.scalars().all()]

@@ -58,12 +58,14 @@ export function BotCard({
             >
               {bot.name}
             </div>
-            {(bot.is_system || bot.is_protected) && (
+            {(bot.is_system || bot.is_protected || bot.is_public) && (
               <span
                 title={
                   bot.is_system
                     ? "系统机器人：不可删除，名称/模型不可修改"
-                    : "受保护机器人：不可删除，名称/模型不可修改"
+                    : bot.is_protected
+                    ? "受保护机器人：不可删除，名称/模型不可修改"
+                    : "🌍 公开机器人：所有用户可见"
                 }
                 style={{
                   fontSize: 10,
@@ -72,16 +74,24 @@ export function BotCard({
                   borderRadius: 999,
                   background: bot.is_system
                     ? "rgba(167, 139, 250, 0.15)"
-                    : "rgba(20, 184, 166, 0.15)",
-                  color: bot.is_system ? "var(--accent)" : "#0D9488",
+                    : bot.is_protected
+                    ? "rgba(20, 184, 166, 0.15)"
+                    : "rgba(34, 197, 94, 0.15)",
+                  color: bot.is_system
+                    ? "var(--accent)"
+                    : bot.is_protected
+                    ? "#0D9488"
+                    : "#15803d",
                   border: bot.is_system
                     ? "1px solid rgba(167, 139, 250, 0.35)"
-                    : "1px solid rgba(20, 184, 166, 0.40)",
+                    : bot.is_protected
+                    ? "1px solid rgba(20, 184, 166, 0.40)"
+                    : "1px solid rgba(34, 197, 94, 0.40)",
                   flexShrink: 0,
                   whiteSpace: "nowrap",
                 }}
               >
-                {bot.is_system ? "🔒 系统" : "🛡 受保护"}
+                {bot.is_system ? "🔒 系统" : bot.is_protected ? "🛡 受保护" : "🌍 公开"}
               </span>
             )}
           </div>
@@ -156,11 +166,22 @@ export function BotCard({
         </div>
       </div>
 
-      {(onEdit || onDelete) && (
+      {(onEdit || onDelete || (!bot.is_system && !bot.is_protected && bot.is_public)) && (
         <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
           {onEdit && (
             <Button size="sm" variant="secondary" onClick={onEdit} style={{ flex: 1 }}>
               ✏️ 编辑
+            </Button>
+          )}
+          {!onEdit && (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled
+              title="该机器人由他人创建，仅创建者或管理员可编辑"
+              style={{ flex: 1, cursor: "not-allowed", opacity: 0.7 }}
+            >
+              👁 只读
             </Button>
           )}
           {bot.is_system || bot.is_protected ? (
