@@ -65,6 +65,18 @@ export function GroupCard({
           >
             {group.name}
           </div>
+          {group.owner_username && group.scope !== "system" && (
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--fg-subtle)",
+                marginBottom: 4,
+              }}
+              title={`由 ${group.owner_username} 创建`}
+            >
+              由 {group.owner_username} 创建
+            </div>
+          )}
           {group.description ? (
             <div
               style={{

@@ -105,6 +105,13 @@ async def update_bot(
     bot = await session.get(Bot, bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="bot not found")
+    # System bots are managed by the platform — only admin may touch them
+    # at all (persona, model, temperature, skills, emoji, everything).
+    if bot.is_system and user.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail=f"「{bot.name}」是系统机器人，仅管理员可修改",
+        )
     # 权限：非 owner 且非 admin → 403
     if user.role != "admin" and bot.owner_id != user.id:
         raise HTTPException(
@@ -112,8 +119,11 @@ async def update_bot(
             detail="只能修改自己创建的 bot",
         )
     data = payload.model_dump(exclude_none=True)
-    # System bots: 保留现有 protected 校验（name / model 不可改）
-    if bot.is_system or bot.is_protected:
+    # Protected (but non-system) bots: lock name + model, allow other fields
+    if bot.is_protected and not bot.is_system:
+        # Protected (non-system) bots were designed with their name and
+        # model baked in; allow tweaking persona/temperature/emoji/skills
+        # but not the name + model identity.
         if "name" in data and data["name"] != bot.name:
             raise HTTPException(
                 status_code=403,

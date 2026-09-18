@@ -79,6 +79,9 @@ class GroupOut(GroupBase):
     public_id: str
     # RBAC 扩展
     owner_id: int | None = None
+    # Resolved owner username for display. None when scope="system"
+    # (no single human owner).
+    owner_username: str | None = None
     scope: str = "user"
     created_at: datetime
     bot_ids: list[int] = Field(default_factory=list)

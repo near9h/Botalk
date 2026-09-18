@@ -190,7 +190,7 @@ export default function LoginPage() {
             <input
               type="text"
               autoComplete="username"
-              placeholder="admin"
+              placeholder="username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               style={fieldStyle}
@@ -210,7 +210,7 @@ export default function LoginPage() {
             <input
               type="password"
               autoComplete="current-password"
-              placeholder="••••••••"
+              placeholder="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               style={fieldStyle}
@@ -241,44 +241,13 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div
-            style={{
-              fontSize: 11,
-              color: "var(--fg-subtle)",
-              textAlign: "center",
-              lineHeight: 1.5,
-              marginTop: 4,
-            }}
-          >
-            {t("login.termsHint")}
-            <a
-              href="#"
-              onClick={(e) => e.preventDefault()}
-              style={{ color: "var(--fg-muted)", marginLeft: 4 }}
-            >
-              {t("login.terms")}
-            </a>
-            <span style={{ margin: "0 6px" }}>·</span>
-            <a
-              href="#"
-              onClick={(e) => e.preventDefault()}
-              style={{ color: "var(--fg-muted)" }}
-            >
-              {t("login.privacy")}
-            </a>
-          </div>
+          {/* Terms/Privacy banner dropped for the self-hosted build —
+            real product would link to actual docs. Self-hosted doesn't
+            have either. */}
 
-          <div
-            style={{
-              fontSize: 11,
-              color: "var(--fg-subtle)",
-              borderTop: "1px solid var(--border)",
-              paddingTop: 12,
-              lineHeight: 1.55,
-            }}
-          >
-            {t("login.bootstrapHint")}
-          </div>
+          {/* No bootstrap credential hint — the operator is expected
+            to either set AUTH_BOOTSTRAP_USER/PASSWORD in .env, or run
+            `POST /api/auth/register` once on an empty DB. */}
         </div>
       </div>
 

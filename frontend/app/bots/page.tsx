@@ -125,12 +125,17 @@ export default function BotsPage() {
   const vendorCount = (v: string) =>
     v === "all" ? bots.length : bots.filter((b) => vendorOfModelId(b.model) === v).length;
 
-  // System bots are always editable by everyone (they're meant to be
-  // tweaked in this UI). Otherwise a bot is only writable by its owner
-  // or an admin — public bots created by other users are read-only here.
+  // Authorization rule (mirrors backend/app/api/bots.py):
+  //   - admin can edit everything (including system / protected bots)
+  //   - protected bots: name + model locked, but persona / temperature /
+  //     emoji / skills editable by anyone (admin + owner); non-admin
+  //     non-owners still get 👁 只读
+  //   - system bots: admin only — backend rejects everyone else with 403
+  //   - non-protected non-system bots: owner (or admin) can edit
+  //   - everyone else: 👁 只读
   const canEdit = (b: Bot) => {
-    if (b.is_system) return true;
     if (me?.role === "admin") return true;
+    if (b.is_system) return false;
     if (me && b.owner_id === me.id) return true;
     return false;
   };

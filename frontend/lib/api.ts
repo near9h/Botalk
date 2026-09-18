@@ -41,6 +41,7 @@ export type Group = {
   bot_ids: number[];
   // RBAC 扩展
   owner_id?: number | null;
+  owner_username?: string | null;
   scope?: "system" | "user";
   created_at: string;
 };

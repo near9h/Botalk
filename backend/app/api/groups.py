@@ -33,7 +33,14 @@ def _gen_public_id() -> str:
     return "".join(secrets.choice(_TOKEN_ALPHABET) for _ in range(_TOKEN_LENGTH))
 
 
-def _to_out(group: Group) -> GroupOut:
+async def _to_out(session: AsyncSession, group: Group) -> GroupOut:
+    # Resolve the owner's username so the UI can show "by alice" without
+    # an extra round-trip per card. None when scope="system".
+    owner_username: str | None = None
+    if group.owner_id is not None:
+        owner = await session.get(User, group.owner_id)
+        if owner is not None:
+            owner_username = owner.username
     return GroupOut(
         public_id=group.public_id,
         name=group.name,
@@ -41,6 +48,7 @@ def _to_out(group: Group) -> GroupOut:
         mode=group.mode,
         max_rounds=group.max_rounds,
         owner_id=group.owner_id,
+        owner_username=owner_username,
         scope=group.scope,
         created_at=group.created_at,
         bot_ids=[m.bot_id for m in group.members],
@@ -75,7 +83,7 @@ async def list_groups(
             .where(or_(Group.scope == "system", Group.owner_id == user.id))
             .order_by(Group.id)
         )
-    return [_to_out(g) for g in result.scalars().all()]
+    return [await _to_out(session, g) for g in result.scalars().all()]
 
 
 @router.post("", response_model=GroupOut, status_code=status.HTTP_201_CREATED)
@@ -137,7 +145,7 @@ async def create_group(
     )
     await session.commit()
     await session.refresh(group, attribute_names=["members"])
-    return _to_out(group)
+    return await _to_out(session, group)
 
 
 @router.get("/{public_id}", response_model=GroupOut)
@@ -156,7 +164,7 @@ async def get_group(
     ):
         # 不可见 → 404（不暴露存在性）
         raise HTTPException(status_code=404, detail="group not found")
-    return _to_out(group)
+    return await _to_out(session, group)
 
 
 @router.patch("/{public_id}", response_model=GroupOut)
@@ -186,7 +194,7 @@ async def update_group(
     )
     await session.commit()
     await session.refresh(group, attribute_names=["members"])
-    return _to_out(group)
+    return await _to_out(session, group)
 
 
 @router.delete("/{public_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -232,7 +240,7 @@ async def add_member(
     if not await session.get(Bot, bot_id):
         raise HTTPException(status_code=404, detail="bot not found")
     if any(m.bot_id == bot_id for m in group.members):
-        return _to_out(group)
+        return await _to_out(session, group)
     next_order = max((m.join_order for m in group.members), default=-1) + 1
     group.members.append(GroupMember(bot_id=bot_id, join_order=next_order))
     await audit_service.log(
@@ -246,7 +254,7 @@ async def add_member(
     )
     await session.commit()
     await session.refresh(group, attribute_names=["members"])
-    return _to_out(group)
+    return await _to_out(session, group)
 
 
 @router.delete(
