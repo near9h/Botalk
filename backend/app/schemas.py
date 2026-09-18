@@ -149,7 +149,15 @@ class ChatRequest(BaseModel):
     # IDs of attachments (already parsed by MinerU) to inject as extra
     # context for this run. Each bot sees the concatenated Markdown in its
     # first user message.
-    attachment_ids: list[int] | None = None
+    attachment_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Public ids (share_tokens) of attachments to inject as extra "
+            "context. Frontend has been sending these strings since the "
+            "HTTPS/share_token refactor (commit 600e658); backend "
+            "resolves them to integer ids before querying."
+        ),
+    )
     # Optional: append this user message into an existing task instead of
     # creating a new one. Accepts either the integer id (legacy/internal)
     # or the share_token (preferred for URLs). When both are missing we

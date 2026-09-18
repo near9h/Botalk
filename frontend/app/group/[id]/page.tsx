@@ -129,8 +129,14 @@ export default function GroupPage({ params }: { params: { id: string } }) {
       setMessages(
         hist.map((m: Message) => {
           const ids = m.attachments ?? [];
+          // The backend now always returns public_ids, but very old rows
+          // (pre-HTTPS share_token refactor) may still carry integer ids.
+          // Look up by string first, then by number, so both shapes work.
           const metas = ids
-            .map((id) => attMap.get(id))
+            .map((id) => {
+              const key = typeof id === "number" ? String(id) : id;
+              return attMap.get(key) ?? (typeof id === "number" ? attMap.get(id) : undefined);
+            })
             .filter((x): x is AttachmentMeta => Boolean(x));
           return {
             id: `db-${m.id}`,

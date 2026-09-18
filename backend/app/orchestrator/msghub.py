@@ -89,11 +89,12 @@ class OrchestratorEvent:
     # enabled skill tool).
     tool_name: str | None = None
     tool_args: dict[str, Any] | None = None
-    # Attachment IDs that the chat layer persisted for this message.
-    # Frontend uses this to render download buttons immediately, before
-    # re-fetching the message list. Tokens are `public_id`s so URLs
-    # aren't enumerable (see Attachment.public_id).
-    attachments: list[str] | None = None
+    # Attachment metadata that the chat layer persisted for this
+    # message. Each entry is shaped like AttachmentMeta on the
+    # frontend ({public_id, filename, mime_type, size_bytes, source})
+    # so the bubble can render the download card inline. Frontend
+    # also accepts legacy integer-id lists for backward compat.
+    attachments: list[Any] | None = None
 
 
 # ─────────────────────── speaker-selection policies ───────────────────────
@@ -676,13 +677,16 @@ async def run_group_discussion(
                 (s.get("manifest") or {}).get("structured_output")
                 for s in (bot_skills or [])
             ) or bot.name in {"专业写文档", "doc_writer"}
-            attachments_for_msg: list[str] = []
+            attachments_for_msg: list[dict[str, Any]] = []
             if structured_doc_skill and full:
                 try:
                     from app.tools.document import generate_document_from_payload
                     rendered_text, att_ids = await generate_document_from_payload(
                         full, group_id=group_id
                     )
+                    # att_ids is now a list of AttachmentMeta dicts so the
+                    # chat bubble can render the download card inline
+                    # without a second batch-meta round-trip.
                     if att_ids:
                         attachments_for_msg = att_ids
                     # Replace the bot's raw JSON with whatever

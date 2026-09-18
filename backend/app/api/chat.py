@@ -64,13 +64,18 @@ async def stream_chat(
     group_id_int = group.id  # 内部整数主键，后续 SQL 用
 
     # Resolve attachments → concatenated Markdown context (if any).
+    # `payload.attachment_ids` carries the public share_token (32-char
+    # URL-safe string), so we have to map back to the integer PK before
+    # filtering. Empty/None means no extra attachments.
     extra_ctx_parts: list[str] = []
     if payload.attachment_ids:
         # Don't trust client-supplied attachment ids blindly — only inject
         # Markdown from attachments whose parent group the caller can see.
         atts = (
             await session.execute(
-                select(Attachment).where(Attachment.id.in_(payload.attachment_ids))
+                select(Attachment).where(
+                    Attachment.public_id.in_(payload.attachment_ids)
+                )
             )
         ).scalars().all()
         visible_group_ids: set[int] = set()
@@ -170,7 +175,32 @@ async def stream_chat(
                 mentioned=mentioned,
                 attachment_context=extra_context,
                 skills_by_bot=skills_by_bot,
+                group_id=group_id_int,
             ):
+                # Persist every user/bot message into chat so the
+                # history list shows attachments the bot produced
+                # (routes B's `attachments: list[str]` of public_ids
+                # → JSON column).
+                if ev.type == "message_end" and ev.content:
+                    try:
+                        await save_message(
+                            ss,
+                            run_id=run.id,
+                            group_id=group_id_int,
+                            role=ev.role or "bot",
+                            content=ev.content,
+                            bot_id=ev.bot_id,
+                            # ev.attachments already carries public_ids
+                            # (see generate_document_from_payload); keep
+                            # them as-is so /api/messages and the SSE
+                            # payload match the URL convention.
+                            attachments=ev.attachments or None,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        # Never let persistence failures break the
+                        # stream; the SSE event still goes out and
+                        # the UI will refetch on next refresh.
+                        print(f"[chat] save_message failed: {exc}")
                 yield {"event": ev.type, "data": jsonlib.dumps(asdict(ev), ensure_ascii=False)}
 
     return EventSourceResponse(event_gen())

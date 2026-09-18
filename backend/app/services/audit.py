@@ -104,9 +104,12 @@ async def list_logs(
     session: AsyncSession,
     *,
     actor_id: int | None = None,
+    actor_role: str | None = None,
     action: str | None = None,
     target_type: str | None = None,
     target_id: str | None = None,
+    status: str | None = None,
+    ip: str | None = None,
     occurred_from: Any = None,
     occurred_to: Any = None,
     limit: int = 50,
@@ -122,10 +125,17 @@ async def list_logs(
         (AuditLog.action, action),
         (AuditLog.target_type, target_type),
         (AuditLog.target_id, target_id),
+        (AuditLog.actor_role, actor_role),
+        (AuditLog.status, status),
     ):
         if val is not None:
             q = q.where(col == val)
             count_q = count_q.where(col == val)
+    # IP 模糊匹配：用户只输入一段也能命中（如 172.19 / 172.19.0.5）
+    if ip:
+        like = f"%{ip.strip()}%"
+        q = q.where(AuditLog.ip.ilike(like))
+        count_q = count_q.where(AuditLog.ip.ilike(like))
     if occurred_from is not None:
         q = q.where(AuditLog.occurred_at >= occurred_from)
         count_q = count_q.where(AuditLog.occurred_at >= occurred_from)

@@ -14,6 +14,12 @@ This migration also creates two product bots:
                     and emits a verdict + audit report.
 
 Both are idempotent: existing rows are skipped.
+
+NOTE: the `bot_skills` INSERT used to live inside `downgrade()` (typo)
+which meant Alembic never ran it during `upgrade head`. That left the
+seeded doc_writer bot without its document_writer skill attached, so
+the 路线 B structured-output pipeline never triggered for it. The
+fix is below: it now lives in `upgrade()`.
 """
 from typing import Sequence, Union
 
@@ -72,14 +78,9 @@ def upgrade() -> None:
         WHERE NOT EXISTS (SELECT 1 FROM bots WHERE name = '文档审核')
         """
     )
-
-
-def downgrade() -> None:
-    op.execute("DELETE FROM bots WHERE name IN ('专业写文档', '文档审核')")
-    op.drop_column("bots", "is_protected")
     # Wire doc_writer → document_writer skill so its replies go through
-    # the existing FILE-block pipeline. doc_auditor doesn't need any
-    # skill — its persona is enough to drive the audit pattern.
+    # the structured-output pipeline (路线 B). doc_auditor doesn't
+    # need any skill — its persona is enough to drive the audit pattern.
     op.execute(
         """
         INSERT INTO bot_skills (bot_id, skill_id, config, enabled)
@@ -91,3 +92,14 @@ def downgrade() -> None:
           )
         """
     )
+
+
+def downgrade() -> None:
+    op.execute(
+        """
+        DELETE FROM bot_skills
+        WHERE bot_id IN (SELECT id FROM bots WHERE name = '专业写文档')
+        """
+    )
+    op.execute("DELETE FROM bots WHERE name IN ('专业写文档', '文档审核')")
+    op.drop_column("bots", "is_protected")

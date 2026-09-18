@@ -39,8 +39,8 @@ function classify(att: AttachmentMeta):
   | "image"
   | "text"
   | "binary" {
-  const ext = att.filename.toLowerCase().split(".").pop() || "";
-  const m = (att.mime_type || "").toLowerCase();
+  const ext = (att.filename ?? "").toLowerCase().split(".").pop() || "";
+  const m = (att.mime_type ?? "").toLowerCase();
   if (["md", "markdown"].includes(ext) || m === "text/markdown") return "markdown";
   if (["html", "htm"].includes(ext) || m === "text/html") return "html";
   if (ext === "pdf" || m === "application/pdf") return "pdf";
@@ -256,9 +256,9 @@ export function AttachmentPreviewDrawer({ attachment, onClose }: Props) {
     body = (
       <div style={fallbackStyle}>
         <div style={{ fontSize: 48, marginBottom: 12 }}>
-          {attachment.filename.toLowerCase().endsWith(".docx") ? "📄"
-            : attachment.filename.toLowerCase().endsWith(".xlsx") ? "📊"
-            : attachment.filename.toLowerCase().endsWith(".pptx") ? "📑"
+          {((attachment.filename ?? "")).toLowerCase().endsWith(".docx") ? "📄"
+            : ((attachment.filename ?? "")).toLowerCase().endsWith(".xlsx") ? "📊"
+            : ((attachment.filename ?? "")).toLowerCase().endsWith(".pptx") ? "📑"
             : "📎"}
         </div>
         <div style={{ fontSize: 14, color: "var(--fg)", marginBottom: 6 }}>
@@ -280,7 +280,7 @@ export function AttachmentPreviewDrawer({ attachment, onClose }: Props) {
             fontSize: 14,
           }}
         >
-          下载 {attachment.filename}
+          下载 {attachment.filename ?? "未命名"}
         </a>
       </div>
     );

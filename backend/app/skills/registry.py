@@ -22,7 +22,8 @@ _BUILTIN_SKILLS: list[dict] = [
         "name": "写文档",
         "description": (
             "按上传的 Markdown 文档模板生成结构化文档、测试报告、纪要等；"
-            "通过 generate_document 工具一键导出 docx。"
+            "通过结构化 JSON 输出 + 模板引擎渲染产出 HTML 与 docx，保证"
+            "「同一 prompt → 同一文件」的稳定性。"
         ),
         "type": "knowledge",
         "category": "document",
@@ -39,21 +40,30 @@ _BUILTIN_SKILLS: list[dict] = [
             }
         },
         "manifest": {
+            # 路线 B 指令：让模型把整条回复当作 JSON 对象返回。
+            # 真正的 schema 文本由 msghub 在拼 system prompt 时注入。
             "instructions": (
-                "你具备「写文档」能力。当用户要求撰写文档、报告、测试报告、纪要、"
-                "需求文档等时：\n"
+                "你具备「写文档」能力。当用户要求撰写文档、报告、测试报告、"
+                "纪要、需求文档等时：\n"
                 "1) 你已配置若干 Markdown 文档模板（清单会附在 system prompt 里）。"
-                " 严格按当前模板的标题层级（# / ## / ###）、章节顺序、字段结构填充，"
-                " 不要自行增删主要章节；\n"
-                "2) 内容用 Markdown 排版，标题、列表、表格、引用块保持规范语法；\n"
-                "3) 涉及数据或事实时给出依据；\n"
-                "4) 使用与用户一致的语言；\n"
-                "5) **最终产出必须调用 generate_document 工具**，把完整的 Markdown "
-                "正文传给 `markdown` 字段，filename 用模板名拼音或英文短名（.docx 后缀自动补），"
-                "title 写一句话主题。返回的 `📄 文档已生成...下载` 行就是用户能下载的链接，"
-                "不要在正文里再贴文档正文，回复里只保留标题 + 关键摘要 + 下载提示即可。"
+                " 严格按当前模板的章节顺序与字段结构填充；\n"
+                "2) **整条回复必须且只能是一个 JSON 对象**（不要写 markdown 文本、"
+                "不要写列表、不要包裹在 ``` 里）。JSON 结构（详见上方 [文档结构] 段）：\n"
+                "   - title: 报告主题\n"
+                "   - summary: 一段执行摘要\n"
+                "   - sections: 至少 2 个章节，每节 body 用 Markdown 写正文\n"
+                "   - tags / language 可选\n"
+                "3) 后端会把这份 JSON 渲染成 HTML 与 docx 并自动生成下载链接；"
+                "你不需要（也不应该）调用任何工具来「保存」文档；\n"
+                "4) 涉及数据或事实时给出依据；\n"
+                "5) 使用与用户一致的语言。\n\n"
+                "如果系统 prompt 里没有出现 [文档结构] 段（说明路由到的是旧版"
+                "工具链），则退回旧约定：完整 Markdown 用 ``` 包裹，并调用 "
+                "generate_document(markdown=..., filename=..., title=...) 工具。"
             ),
             "assets": [],
+            # 标记位：msghub 据此决定是否注入 schema 文本 + 拦截 tool_calls。
+            "structured_output": True,
         },
     },
     {

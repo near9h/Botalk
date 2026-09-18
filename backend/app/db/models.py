@@ -161,11 +161,11 @@ class Message(Base):
     )
     content: Mapped[str] = mapped_column(Text, default="", nullable=False)
     token_usage: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    # List of attachment IDs that this message authored. When a bot reply
-    # contains [FILE:foo.md]...[/FILE] blocks, the orchestrator splits
-    # them out, creates Attachment rows, and appends their IDs here so
-    # the UI can render download buttons.
-    attachments: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    # Public share_tokens of attachments this message authored (路线 B
+    # structured renderer). The UI keys its attachment-meta cache by
+    # `public_id` (not the integer id), so we store the strings here
+    # to keep /api/messages and the SSE payload shape consistent.
+    attachments: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

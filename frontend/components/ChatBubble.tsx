@@ -202,8 +202,12 @@ function formatBytes(n: number): string {
 }
 
 function attachmentEmoji(filename: string, mime: string): string {
-  const ext = filename.toLowerCase().split(".").pop() || "";
-  const m = mime.toLowerCase();
+  // Be defensive: rows from older runs may have undefined mime or
+  // filename (legacy bot attachments, malformed SSE payloads, etc.).
+  // Both used to crash with "Cannot read properties of undefined
+  // (reading 'toLowerCase')" in the chat bubble render path.
+  const ext = (filename ?? "").toLowerCase().split(".").pop() || "";
+  const m = (mime ?? "").toLowerCase();
   if (["md", "markdown"].includes(ext)) return "📝";
   if (["doc", "docx"].includes(ext) || m.includes("wordprocessing")) return "📄";
   if (["xls", "xlsx", "csv"].includes(ext) || m.includes("spreadsheet")) return "📊";

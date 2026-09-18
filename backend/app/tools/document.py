@@ -127,10 +127,17 @@ async def generate_document_from_payload(
     group_id: int | None,
     *,
     formats: tuple[str, ...] = ("html", "docx"),
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[dict[str, Any]]]:
     """路线 B entry: parse the bot's full reply as a `ReportPayload`,
     render it through Jinja, persist each format as its own
-    Attachment row, and return (markdown_summary, [attachment_ids]).
+    Attachment row, and return (markdown_summary, [attachment_meta]).
+
+    `attachment_meta` is a list of dicts shaped like AttachmentMeta on
+    the frontend ({public_id, filename, mime_type, size_bytes,
+    source: "bot"}). Returning the full meta (not just public_ids)
+    lets the chat bubble render download cards without a second
+    batch-meta round-trip — important because SSE events only live in
+    the message payload itself.
 
     On parse / validation failure we fall back to the legacy
     `generate_document` path so the caller always gets *something*
@@ -141,7 +148,9 @@ async def generate_document_from_payload(
     except (ValidationError, ValueError, json.JSONDecodeError):
         # Treat the whole reply as free markdown and ship the legacy
         # single-docx path. Caller sees the same `📄 ... ` line and
-        # the user gets a download.
+        # the user gets a download. The legacy path returns just a
+        # markdown summary — no meta dicts available in the SSE event,
+        # so the chat UI will lazy-load metadata via batch-meta.
         md = await generate_document(
             {"markdown": raw_reply, "filename": "report.docx", "group_id": group_id}
         )
@@ -149,9 +158,6 @@ async def generate_document_from_payload(
 
     rendered = render_payload(payload, formats=formats)
     if not rendered:
-        # Payload parsed but the renderer produced nothing (e.g. zero
-        # sections). Surface a friendly hint instead of letting the
-        # raw JSON blob leak through to the chat UI.
         return (
             "⚠️ 已解析报告结构，但渲染器未产出任何文件（可能是 sections 为空）。"
             "原始回复保留在历史记录中。",
@@ -159,7 +165,7 @@ async def generate_document_from_payload(
         )
 
     rendered_items = [(fmt, info) for fmt, info in rendered.items() if fmt != "_warnings"]
-    att_tokens: list[str] = []
+    att_meta_list: list[dict[str, Any]] = []
     try:
         async with SessionLocal() as session:
             for _fmt, info in rendered_items:
@@ -174,7 +180,6 @@ async def generate_document_from_payload(
                 )
                 session.add(att)
             await session.commit()
-            # Re-fetch by storage_path to get the assigned public_ids.
             from sqlalchemy import select  # local import keeps module-level clean
             paths = [info["path"] for _fmt, info in rendered_items]
             rows = (
@@ -182,27 +187,38 @@ async def generate_document_from_payload(
                     select(Attachment).where(Attachment.storage_path.in_(paths))
                 )
             ).scalars().all()
-            att_ids_by_path = {a.storage_path: a.public_id for a in rows}
+            att_by_path: dict[str, Attachment] = {a.storage_path: a for a in rows}
     except Exception as exc:  # noqa: BLE001
-        return f"[generate_document_from_payload] 写入附件失败: {exc}", []
+        return f"[generate_document_from_payload] 写入附件失败: {exc}", att_meta_list
 
     links: list[str] = []
     for fmt, info in rendered_items:
-        att_token = att_ids_by_path.get(info["path"])
-        if not att_token:
+        att = att_by_path.get(info["path"])
+        if not att:
             continue
-        att_tokens.append(att_token)
+        # Build the meta dict the frontend expects. `id` is filled with
+        # the integer PK for legacy callers; new code reads public_id.
+        att_meta_list.append(
+            {
+                "id": att.id,
+                "public_id": att.public_id,
+                "filename": att.filename,
+                "mime_type": att.mime_type,
+                "size_bytes": att.size_bytes,
+                "source": "bot",
+            }
+        )
         size_kb = max(1, info["size_bytes"] // 1024)
         emoji = "🌐" if fmt == "html" else "📄"
         links.append(
-            f"{emoji} [{fmt.upper()}](attachment://{att_token})（{size_kb} KB）"
+            f"{emoji} [{fmt.upper()}](attachment://{att.public_id})（{size_kb} KB）"
         )
 
     if not links:
-        return "[generate_document_from_payload] 没有可下载的产物", []
+        return "[generate_document_from_payload] 没有可下载的产物", att_meta_list
     summary = (
         f"📄 文档已生成：**{payload.title}**\n\n"
         + "\n".join(links)
         + f"\n\n_结构化渲染 · {len(payload.sections)} 章节_"
     )
-    return summary, att_ids
+    return summary, att_meta_list

@@ -128,16 +128,33 @@ async def save_message(
     content: str,
     bot_id: int | None = None,
     token_usage: int = 0,
-    attachments: list[str] | None = None,
+    attachments: list | None = None,
 ) -> Message:
     """Persist one chat turn to `messages`.
 
-    `attachments` is the list of attachment `public_id`s that this
-    message produced (for bot turns) or referenced (for user turns).
-    The column is JSON so callers can store anything that
-    round-trips, but the doc-writer pipeline (路线 B) always passes
-    `list[str]` of public_ids.
+    `attachments` may be:
+      - a list of public_ids (legacy string list, post-路线 B convention)
+      - a list of AttachmentMeta dicts (new SSE payload shape, each
+        dict has a `public_id` field)
+      - a list of integer ids (pre-share_token era)
+
+    We always reduce the input down to public_ids before persisting so
+    /api/messages and the SSE payload agree on the URL-safe token.
     """
+    normalized: list[str] = []
+    for ref in attachments or []:
+        if isinstance(ref, str):
+            normalized.append(ref)
+        elif isinstance(ref, int):
+            # Legacy integer id — caller-side rendering still handles
+            # it (see list_messages), but persisting an int means the
+            # row won't resolve to anything usable. Wrap as a sentinel
+            # string so the row stays non-empty for debugging.
+            normalized.append(f"int:{ref}")
+        elif isinstance(ref, dict):
+            pid = ref.get("public_id")
+            if isinstance(pid, str) and pid:
+                normalized.append(pid)
     msg = Message(
         run_id=run_id,
         group_id=group_id,
@@ -145,7 +162,7 @@ async def save_message(
         bot_id=bot_id,
         content=content,
         token_usage=token_usage,
-        attachments=list(attachments or []),
+        attachments=normalized,
     )
     session.add(msg)
     # If this is the first user message of a still-untitled task,
