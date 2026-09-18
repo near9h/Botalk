@@ -432,7 +432,10 @@ export function Select({
   const filtered = useMemo(() => {
     if (!query) return options;
     const q = query.toLowerCase();
-    return options.filter((o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q));
+    return options.filter((o) =>
+      (o.label ?? "").toLowerCase().includes(q) ||
+      (o.value ?? "").toLowerCase().includes(q),
+    );
   }, [options, query]);
 
   return (
@@ -734,9 +737,9 @@ export function Badge({
   );
 }
 
-export function vendorBadgeVariant(vendor: string): BadgeVariant {
-  const v = vendor.toLowerCase();
-  if (v in badgeVariantStyles) return v as BadgeVariant;
+export function vendorBadgeVariant(vendor: string | null | undefined): BadgeVariant {
+  const v = (vendor ?? "").toLowerCase();
+  if (v && v in badgeVariantStyles) return v as BadgeVariant;
   return "other";
 }
 

@@ -7,18 +7,24 @@ RBAC:
 
 全部写操作接入 audit log。
 """
+import time
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.auth import require_user
+from app.config import get_settings
 from app.db.models import Bot, BotSkill, Skill, User
 from app.db.session import get_session
 from app.schemas import BotCreate, BotOut, BotSkillOut, BotSkillSet, BotUpdate, SkillOut
 from app.services import audit as audit_service
 
 router = APIRouter()
+settings = get_settings()
 
 
 @router.get("", response_model=list[BotOut])
@@ -42,6 +48,134 @@ async def list_bots(
             .order_by(Bot.id)
         )
     return list(result.scalars().all())
+
+
+class GeneratePersonaRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    hint: str | None = Field(default=None, max_length=500)
+
+
+class GeneratePersonaResponse(BaseModel):
+    persona: str
+    model: str
+    latency_ms: int
+
+
+def _persona_prompt(name: str, hint: str | None) -> list[dict[str, str]]:
+    """Build a small chat prompt that asks the model to write a system persona.
+
+    We ask for ~200 Chinese characters covering: role, expertise, tone, and
+    how they should respond in a multi-bot group chat. Output goes straight
+    into the bot's `persona` column.
+    """
+    extra = f"\n用户补充要求：{hint.strip()}" if hint and hint.strip() else ""
+    system = (
+        "你是一名资深 Prompt 工程师，擅长为多角色群聊场景编写简洁、有辨识度的中文人设。"
+        "请严格按要求输出，不要使用 markdown 代码块、不要使用项目符号、不要解释。"
+    )
+    user = (
+        f"请为名为「{name.strip()}」的 AI 角色写一段中文 system prompt（人设），"
+        "约 200 字，3 段：\n"
+        "1) 身份与专业背景（30-60 字）\n"
+        "2) 表达风格与沟通偏好（60-100 字）\n"
+        "3) 在群聊中被 @ 时的回应方式与边界（60-80 字）\n"
+        "语气需符合名字暗示的定位；不要重复名字本身；"
+        "不要使用 '你是一位...' 之类的元描述开头。"
+        f"{extra}"
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+@router.post("/generate-persona", response_model=GeneratePersonaResponse)
+async def generate_persona(
+    body: GeneratePersonaRequest,
+    user: User = Depends(require_user),
+) -> GeneratePersonaResponse:
+    """Ask NewAPI to draft a default persona for a freshly named bot.
+
+    Used by the bot form dialog's "AI 生成" button next to the persona
+    textarea. We pick a sensible default model (gpt-4o-mini when the
+    configured NewAPI base URL is set) and surface the upstream error
+    verbatim so the UI can show a useful message.
+    """
+    if not settings.newapi_base_url or settings.newapi_base_url.startswith(
+        "https://your-newapi"
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="未配置 NewAPI（NEWAPI_BASE_URL），无法生成人设",
+        )
+    # Cheap, fast model is fine for short persona drafts; users can change
+    # the bot's model after creation.
+    model = "agnes-3.0-flash"
+    url = f"{settings.newapi_base_url.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {settings.newapi_api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": _persona_prompt(body.name, body.hint),
+        "temperature": 0.8,
+        "max_tokens": 600,
+        "stream": False,
+    }
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"network error: {exc.__class__.__name__}: {exc}",
+        ) from exc
+
+    latency_ms = int((time.time() - started) * 1000)
+    if resp.status_code != 200:
+        # Try to surface the upstream message verbatim.
+        err_text = resp.text[:300]
+        try:
+            err_json = resp.json()
+            err = err_json.get("error") if isinstance(err_json, dict) else None
+            if isinstance(err, dict) and err.get("message"):
+                err_text = str(err["message"])[:300]
+            elif isinstance(err, str):
+                err_text = err[:300]
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"NewAPI error: {err_text}",
+        )
+
+    try:
+        data = resp.json()
+        choices = data.get("choices") if isinstance(data, dict) else None
+        content = ""
+        if choices:
+            msg = choices[0].get("message") or {}
+            raw = msg.get("content")
+            if isinstance(raw, str):
+                content = raw
+            elif isinstance(raw, list):
+                content = "".join(
+                    p.get("text", "") for p in raw if isinstance(p, dict)
+                )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"response parse error: {exc}",
+        ) from exc
+
+    persona = (content or "").strip()
+    if not persona:
+        raise HTTPException(status_code=502, detail="模型返回了空内容")
+
+    return GeneratePersonaResponse(persona=persona, model=model, latency_ms=latency_ms)
 
 
 @router.post("", response_model=BotOut, status_code=status.HTTP_201_CREATED)

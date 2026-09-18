@@ -1,13 +1,16 @@
 "use client";
 
-import { ReactNode, useEffect, useRef } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { Avatar, avatarColor } from "./ui";
 import { Bot } from "@/lib/api";
 import { cacheAttachments, renderMessageWithMentions } from "@/lib/markdown";
 import { useI18n } from "@/lib/i18n";
+import { AttachmentPreviewDrawer } from "./AttachmentPreviewDrawer";
 
 export type AttachmentMeta = {
   id: number;
+  // Unguessable download token (see Attachment.public_id on backend).
+  public_id: string;
   filename: string;
   mime_type: string;
   size_bytes: number;
@@ -219,6 +222,7 @@ type AttachmentCardsProps = {
 };
 
 function AttachmentCards({ attachments, accent }: AttachmentCardsProps) {
+  const [previewing, setPreviewing] = useState<AttachmentMeta | null>(null);
   return (
     <div
       style={{
@@ -233,10 +237,8 @@ function AttachmentCards({ attachments, accent }: AttachmentCardsProps) {
       {attachments.map((a) => {
         const isBot = a.source === "bot";
         return (
-          <a
+          <div
             key={a.id}
-            href={`/api/attachments/${a.id}/download`}
-            download
             style={{
               display: "flex",
               alignItems: "center",
@@ -248,19 +250,18 @@ function AttachmentCards({ attachments, accent }: AttachmentCardsProps) {
                 ? "1px solid rgba(167, 139, 250, 0.35)"
                 : "1px solid var(--border)",
               color: "var(--fg)",
-              textDecoration: "none",
               transition:
                 "transform var(--transition), box-shadow var(--transition), border-color var(--transition)",
               boxShadow: "var(--shadow-xs)",
             }}
             onMouseEnter={(e) => {
-              const el = e.currentTarget as HTMLAnchorElement;
+              const el = e.currentTarget as HTMLDivElement;
               el.style.transform = "translateY(-1px)";
               el.style.boxShadow = "var(--shadow-lg)";
               el.style.borderColor = "rgba(167, 139, 250, 0.55)";
             }}
             onMouseLeave={(e) => {
-              const el = e.currentTarget as HTMLAnchorElement;
+              const el = e.currentTarget as HTMLDivElement;
               el.style.transform = "translateY(0)";
               el.style.boxShadow = "var(--shadow-xs)";
               el.style.borderColor = accent
@@ -305,10 +306,53 @@ function AttachmentCards({ attachments, accent }: AttachmentCardsProps) {
                 )}
               </div>
             </div>
-            <div style={{ fontSize: 16, color: "var(--accent)" }}>↓</div>
-          </a>
+            <button
+              type="button"
+              onClick={(ev) => {
+                ev.stopPropagation();
+                setPreviewing(a);
+              }}
+              title="预览"
+              aria-label="预览"
+              style={iconBtnStyle}
+            >
+              👁
+            </button>
+            <a
+              href={`/api/attachments/${a.public_id}/download`}
+              download
+              title="下载"
+              aria-label="下载"
+              onClick={(ev) => ev.stopPropagation()}
+              style={iconBtnStyle}
+            >
+              ↓
+            </a>
+          </div>
         );
       })}
+      {previewing && (
+        <AttachmentPreviewDrawer
+          attachment={previewing}
+          onClose={() => setPreviewing(null)}
+        />
+      )}
     </div>
   );
 }
+
+const iconBtnStyle: React.CSSProperties = {
+  width: 30,
+  height: 30,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 8,
+  border: "1px solid var(--border)",
+  background: "transparent",
+  color: "var(--accent)",
+  cursor: "pointer",
+  fontSize: 14,
+  textDecoration: "none",
+  flexShrink: 0,
+};

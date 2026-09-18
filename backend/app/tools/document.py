@@ -1,9 +1,15 @@
 """Document generation tool.
 
-`generate_document(markdown, filename, title=None)` -- turn a piece of
-markdown into a real `.docx` (using an in-tree pandoc binary), persist it
-as an attachment, and return a download link so the frontend can render
-a download card in the chat bubble.
+Two entry points:
+
+1. `generate_document(args, ...)` — legacy "free markdown → docx"
+   path. Still works for bots that haven't been migrated to 路线 B,
+   and as a safety net when the structured-output parse fails.
+
+2. `generate_document_from_payload(payload, group_id)` — 路线 B path:
+   the bot already returned a validated `ReportPayload` JSON object,
+   which we render through a Jinja template into HTML + docx, persist
+   each as its own `Attachment` row, and return download links.
 
 Why in-tree pandoc? Installing `pandoc` system-wide requires apt or
 homebrew on the host, which is fragile inside Docker. `pypandoc-binary`
@@ -12,15 +18,19 @@ box without any extra setup step.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
 
 import pypandoc
+from pydantic import ValidationError
 
 from app.config import get_settings
 from app.db.models import Attachment
 from app.db.session import SessionLocal
+from app.tools.report_renderer import render as render_payload
+from app.tools.report_schema import ReportPayload, parse_payload
 
 _INVALID_FN = re.compile(r"[\\/:*?\"<>|]+")
 
@@ -97,7 +107,7 @@ async def generate_document(args: dict[str, Any], config: dict[str, Any] | None 
             session.add(att)
             await session.commit()
             await session.refresh(att)
-            att_id = att.id
+            att_token = att.public_id
     except Exception as exc:  # noqa: BLE001
         return f"[generate_document] 写入附件失败: {exc}"
 
@@ -107,6 +117,92 @@ async def generate_document(args: dict[str, Any], config: dict[str, Any] | None 
     title_part = f"（{title}）" if title else ""
     return (
         f"📄 文档已生成{title_part}：`{filename}`  "
-        f"[下载](attachment://{att_id})  "
+        f"[下载](attachment://{att_token})  "
         f"（{size_bytes // 1024} KB）"
     )
+
+
+async def generate_document_from_payload(
+    raw_reply: str,
+    group_id: int | None,
+    *,
+    formats: tuple[str, ...] = ("html", "docx"),
+) -> tuple[str, list[str]]:
+    """路线 B entry: parse the bot's full reply as a `ReportPayload`,
+    render it through Jinja, persist each format as its own
+    Attachment row, and return (markdown_summary, [attachment_ids]).
+
+    On parse / validation failure we fall back to the legacy
+    `generate_document` path so the caller always gets *something*
+    rather than a hard error.
+    """
+    try:
+        payload = parse_payload(raw_reply)
+    except (ValidationError, ValueError, json.JSONDecodeError):
+        # Treat the whole reply as free markdown and ship the legacy
+        # single-docx path. Caller sees the same `📄 ... ` line and
+        # the user gets a download.
+        md = await generate_document(
+            {"markdown": raw_reply, "filename": "report.docx", "group_id": group_id}
+        )
+        return md, []
+
+    rendered = render_payload(payload, formats=formats)
+    if not rendered:
+        # Payload parsed but the renderer produced nothing (e.g. zero
+        # sections). Surface a friendly hint instead of letting the
+        # raw JSON blob leak through to the chat UI.
+        return (
+            "⚠️ 已解析报告结构，但渲染器未产出任何文件（可能是 sections 为空）。"
+            "原始回复保留在历史记录中。",
+            [],
+        )
+
+    rendered_items = [(fmt, info) for fmt, info in rendered.items() if fmt != "_warnings"]
+    att_tokens: list[str] = []
+    try:
+        async with SessionLocal() as session:
+            for _fmt, info in rendered_items:
+                att = Attachment(
+                    group_id=group_id,
+                    filename=info["filename"],
+                    mime_type=info["mime_type"],
+                    size_bytes=info["size_bytes"],
+                    status="done",
+                    content_md=None,
+                    storage_path=info["path"],
+                )
+                session.add(att)
+            await session.commit()
+            # Re-fetch by storage_path to get the assigned public_ids.
+            from sqlalchemy import select  # local import keeps module-level clean
+            paths = [info["path"] for _fmt, info in rendered_items]
+            rows = (
+                await session.execute(
+                    select(Attachment).where(Attachment.storage_path.in_(paths))
+                )
+            ).scalars().all()
+            att_ids_by_path = {a.storage_path: a.public_id for a in rows}
+    except Exception as exc:  # noqa: BLE001
+        return f"[generate_document_from_payload] 写入附件失败: {exc}", []
+
+    links: list[str] = []
+    for fmt, info in rendered_items:
+        att_token = att_ids_by_path.get(info["path"])
+        if not att_token:
+            continue
+        att_tokens.append(att_token)
+        size_kb = max(1, info["size_bytes"] // 1024)
+        emoji = "🌐" if fmt == "html" else "📄"
+        links.append(
+            f"{emoji} [{fmt.upper()}](attachment://{att_token})（{size_kb} KB）"
+        )
+
+    if not links:
+        return "[generate_document_from_payload] 没有可下载的产物", []
+    summary = (
+        f"📄 文档已生成：**{payload.title}**\n\n"
+        + "\n".join(links)
+        + f"\n\n_结构化渲染 · {len(payload.sections)} 章节_"
+    )
+    return summary, att_ids

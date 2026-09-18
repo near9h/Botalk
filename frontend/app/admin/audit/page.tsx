@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import {
   Badge,
   Button,
@@ -13,6 +13,27 @@ import {
 } from "@/components/ui";
 import { PageShell } from "@/components/Sidebar";
 import { api, AuditLog, User } from "@/lib/api";
+
+/** Compact Label-above-Control wrapper for the audit filter bar.
+ *  Keeps label height tight so the whole bar fits in one row on a
+ *  desktop without vertical-stacking each filter. `grow` lets the
+ *  free-text inputs stretch to fill leftover width. */
+function FilterField({
+  label,
+  grow,
+  children,
+}: {
+  label: string;
+  grow?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div style={grow ? { flex: "1 1 160px", minWidth: 140 } : { minWidth: 130 }}>
+      <Label>{label}</Label>
+      {children}
+    </div>
+  );
+}
 
 const RANGES = [
   { value: "1h", label: "最近 1 小时" },
@@ -58,6 +79,18 @@ const TARGET_OPTIONS = [
   { value: "attachment", label: "attachment" },
 ];
 
+const ROLE_OPTIONS = [
+  { value: "", label: "全部角色" },
+  { value: "admin", label: "admin" },
+  { value: "user", label: "user" },
+];
+
+const STATUS_OPTIONS = [
+  { value: "", label: "全部状态" },
+  { value: "success", label: "success" },
+  { value: "failure", label: "failure" },
+];
+
 export default function AuditAdminPage() {
   const toast = useToast();
   const [me, setMe] = useState<User | null>(null);
@@ -76,6 +109,9 @@ export default function AuditAdminPage() {
     action: "",
     target_type: "",
     actor_name: "",
+    actor_role: "",
+    status: "",
+    ip: "",
     page: 0,
     page_size: 50,
   });
@@ -97,6 +133,9 @@ export default function AuditAdminPage() {
         api.listAuditLogs({
           action: filter.action || undefined,
           target_type: filter.target_type || undefined,
+          actor_role: filter.actor_role || undefined,
+          status: filter.status || undefined,
+          ip: filter.ip.trim() || undefined,
           from,
           limit: filter.page_size,
           offset: filter.page * filter.page_size,
@@ -197,38 +236,55 @@ export default function AuditAdminPage() {
 
         <Card style={{ marginBottom: 16, padding: 14 }}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-            <div>
-              <Label>时间</Label>
+            <FilterField label="时间">
               <Select
                 value={filter.range}
                 onChange={(v) => setFilter({ ...filter, range: String(v), page: 0 })}
                 options={RANGES}
               />
-            </div>
-            <div>
-              <Label>操作</Label>
+            </FilterField>
+            <FilterField label="角色">
+              <Select
+                value={filter.actor_role}
+                onChange={(v) => setFilter({ ...filter, actor_role: String(v), page: 0 })}
+                options={ROLE_OPTIONS}
+              />
+            </FilterField>
+            <FilterField label="操作">
               <Select
                 value={filter.action}
                 onChange={(v) => setFilter({ ...filter, action: String(v), page: 0 })}
                 options={ACTION_OPTIONS}
               />
-            </div>
-            <div>
-              <Label>目标</Label>
+            </FilterField>
+            <FilterField label="目标">
               <Select
                 value={filter.target_type}
                 onChange={(v) => setFilter({ ...filter, target_type: String(v), page: 0 })}
                 options={TARGET_OPTIONS}
               />
-            </div>
-            <div style={{ flex: 1, minWidth: 160 }}>
-              <Label>用户名（模糊）</Label>
+            </FilterField>
+            <FilterField label="状态">
+              <Select
+                value={filter.status}
+                onChange={(v) => setFilter({ ...filter, status: String(v), page: 0 })}
+                options={STATUS_OPTIONS}
+              />
+            </FilterField>
+            <FilterField label="用户" grow>
               <Input
                 value={filter.actor_name}
                 onChange={(e) => setFilter({ ...filter, actor_name: e.target.value, page: 0 })}
-                placeholder="alice"
+                placeholder="模糊匹配"
               />
-            </div>
+            </FilterField>
+            <FilterField label="IP" grow>
+              <Input
+                value={filter.ip}
+                onChange={(e) => setFilter({ ...filter, ip: e.target.value, page: 0 })}
+                placeholder="模糊匹配"
+              />
+            </FilterField>
           </div>
         </Card>
 
@@ -257,7 +313,7 @@ export default function AuditAdminPage() {
                 {logs.map((it) => {
                   const isOpen = expanded === it.id;
                   return (
-                    <tbody key={it.id}>
+                    <Fragment key={it.id}>
                       <tr
                         style={{
                           borderTop: "1px solid var(--border)",
@@ -269,7 +325,7 @@ export default function AuditAdminPage() {
                         <td style={{ padding: "8px 12px", whiteSpace: "nowrap", color: "var(--fg-muted)" }}>
                           {new Date(it.occurred_at).toLocaleString("zh-CN", { hour12: false })}
                         </td>
-                        <td style={{ padding: "8px 12px" }}>
+                        <td style={{ padding: "8px 12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }}>
                           {it.actor_name || <span style={{ color: "var(--fg-subtle)" }}>匿名</span>}
                         </td>
                         <td style={{ padding: "8px 12px" }}>
@@ -279,8 +335,22 @@ export default function AuditAdminPage() {
                           {it.action}
                         </td>
                         <td style={{ padding: "8px 12px" }}>
-                          <Badge variant="info">{it.target_type}</Badge>{" "}
-                          <span style={{ color: "var(--fg-muted)" }}>{it.target_name || ""}</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                            <Badge variant="info" style={{ flexShrink: 0 }}>
+                              {it.target_type}
+                            </Badge>
+                            <span
+                              style={{
+                                color: "var(--fg-muted)",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                                minWidth: 0,
+                              }}
+                            >
+                              {it.target_name || ""}
+                            </span>
+                          </div>
                         </td>
                         <td style={{ padding: "8px 12px" }}>
                           <Badge variant={it.status === "success" ? "auto" : "default"}>
@@ -322,7 +392,7 @@ export default function AuditAdminPage() {
                           </td>
                         </tr>
                       )}
-                    </tbody>
+                    </Fragment>
                   );
                 })}
               </tbody>

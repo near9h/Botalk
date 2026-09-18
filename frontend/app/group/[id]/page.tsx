@@ -112,15 +112,15 @@ export default function GroupPage({ params }: { params: { id: string } }) {
       // Collect attachment IDs we need metadata for, then fetch in
       // one round-trip. Keeps the bubble cards rendered as soon as
       // history is loaded.
-      const attIdSet = new Set<number>();
+      const attIdSet = new Set<string>();
       hist.forEach((m: Message) =>
-        (m.attachments ?? []).forEach((id: number) => attIdSet.add(id)),
+        (m.attachments ?? []).forEach((id: string) => attIdSet.add(id)),
       );
-      let attMap = new Map<number, AttachmentMeta>();
+      let attMap = new Map<string, AttachmentMeta>();
       if (attIdSet.size > 0) {
         try {
           const metas = await api.batchAttachmentMeta(Array.from(attIdSet));
-          attMap = new Map(metas.map((m) => [m.id, m]));
+          attMap = new Map(metas.map((m) => [m.public_id, m]));
         } catch (e) {
           // Non-fatal — cards just won't show metadata.
           console.warn("batchAttachmentMeta failed", e);
@@ -191,8 +191,15 @@ export default function GroupPage({ params }: { params: { id: string } }) {
   }, [groupId, toast, t]);
 
   useEffect(() => {
+    // Initial mount only — re-running loadAll() on every `searchParams`
+    // change is the bug that makes "新会话" silently snap back to the
+    // previous task: the URL pins the new task's token, but pending
+    // drafts are filtered out of GET /api/tasks, so loadAll can't find
+    // them and falls back to taskList[0]. Task switching afterwards is
+    // handled explicitly by selectTask() and newSession().
     loadAll();
-  }, [loadAll]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -213,7 +220,7 @@ export default function GroupPage({ params }: { params: { id: string } }) {
     let currentBotName: string | null = null;
     let currentBubbleId: string = "";
 
-    const attachmentIds = attachments.map((a) => a.id);
+    const attachmentIds = attachments.map((a) => a.public_id);
     const rawAbort = streamChat(
       {
         group_public_id: groupId,
@@ -413,6 +420,11 @@ export default function GroupPage({ params }: { params: { id: string } }) {
       setMessages([]);
       setRoundIndex(0);
       setActiveSpeaker(null);
+      // Close the history drawer if it was open — clicking "新会话"
+      // while looking at history should drop the user back into the
+      // (now empty) chat panel, not leave them staring at the task
+      // list with the empty task nowhere to be seen.
+      setHistoryOpen(false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       toast.push({ title: t("common.toast.loadFail"), description: msg, variant: "error" });

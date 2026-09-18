@@ -1,4 +1,5 @@
 """SQLAlchemy ORM models."""
+import secrets
 from datetime import datetime
 from sqlalchemy import (
     JSON,
@@ -180,6 +181,13 @@ class Attachment(Base):
     __tablename__ = "attachments"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Public, unguessable URL token. 32-char URL-safe random base64 (~192 bits).
+    # Used in /api/attachments/{public_id}/download and the markdown
+    # `attachment://<public_id>` scheme so URLs can't be enumerated.
+    public_id: Mapped[str] = mapped_column(
+        String(48), unique=True, nullable=False, index=True,
+        default=lambda: secrets.token_urlsafe(24),
+    )
     group_id: Mapped[int | None] = mapped_column(
         ForeignKey("groups.id", ondelete="CASCADE"), nullable=True, index=True
     )

@@ -7,7 +7,7 @@ import os
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -202,7 +202,7 @@ async def upload_attachment(
 
 
 async def _resolve_visible_attachment(
-    session: AsyncSession, user: User, att_id: int
+    session: AsyncSession, user: User, att_public_id: str
 ) -> Attachment | None:
     """Return the attachment iff its parent group is visible to `user`.
 
@@ -213,8 +213,14 @@ async def _resolve_visible_attachment(
 
     For unattached attachments (group_id is NULL — e.g. ad-hoc uploads
     not yet bound to a session) we fall back to admin-only.
+
+    Lookups are keyed by the unguessable `public_id` so the URL path
+    can't be enumerated to enumerate other users' attachment IDs.
     """
-    att = await session.get(Attachment, att_id)
+    result = await session.execute(
+        select(Attachment).where(Attachment.public_id == att_public_id)
+    )
+    att = result.scalar_one_or_none()
     if not att:
         return None
     if att.group_id is None:
@@ -231,39 +237,77 @@ async def _resolve_visible_attachment(
     return None
 
 
-@router.get("/{att_id}")
+@router.get("/{att_public_id}")
 async def get_attachment(
-    att_id: int,
+    att_public_id: str,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
 ) -> dict:
-    att = await _resolve_visible_attachment(session, user, att_id)
+    att = await _resolve_visible_attachment(session, user, att_public_id)
     if not att:
         raise HTTPException(status_code=404, detail="attachment not found")
     return _serialize(att, include_content=True)
 
 
-@router.get("/{att_id}/download")
+@router.get("/{att_public_id}/download")
 async def download_attachment(
-    att_id: int,
+    att_public_id: str,
+    inline: bool = Query(
+        default=False,
+        description=(
+            "If true, send Content-Disposition: inline so the browser "
+            "renders the bytes inside an iframe / embedded viewer instead "
+            "of saving to disk. Used by the front-end preview drawer."
+        ),
+    ),
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
 ) -> Response:
     """Stream the attachment's bytes as a file download.
 
-    Bot-authored attachments store their content in `content_md` (not
-    on disk), so we synthesize the body from there. User-uploaded
-    attachments have already had their storage_path nulled after
-    MinerU parsing — for those we still return content_md when
-    available, otherwise an empty body (the upload is consumed).
+    Bot-authored attachments (路线 B / `generate_document`) write the
+    actual bytes to `storage_path` on the host filesystem and leave
+    `content_md` empty (the file itself *is* the artifact). Legacy
+    attachments that pre-date storage on disk may still carry the
+    content inline in `content_md` — serve that when present. We never
+    want to fall through to "empty body", which is what produced the
+    "0 KB 下载" bug when `content_md` was blank but `storage_path`
+    pointed at a real file.
+
+    `inline=true` swaps Content-Disposition to `inline` for in-page
+    viewers (pdf.js / mammoth / iframe); default is `attachment` so the
+    existing download button keeps behaving like a real download.
+
+    Identified by the unguessable `public_id` rather than the integer
+    pk so URLs aren't enumerable.
     """
     import urllib.parse
+    from pathlib import Path
 
-    att = await _resolve_visible_attachment(session, user, att_id)
+    att = await _resolve_visible_attachment(session, user, att_public_id)
     if not att:
         raise HTTPException(status_code=404, detail="attachment not found")
 
-    body = (att.content_md or "").encode("utf-8")
+    # Prefer the on-disk file (real bytes) over content_md. We still
+    # allow content_md as a fallback so legacy uploads / fixtures keep
+    # serving from the database.
+    body: bytes | None = None
+    if att.storage_path:
+        try:
+            body = Path(att.storage_path).read_bytes()
+        except FileNotFoundError:
+            # Storage got cleaned up after the upload was parsed.
+            # Fall through to content_md; if that's empty too we'll
+            # raise a clear error rather than shipping a 0-byte file.
+            body = None
+    if body is None:
+        body = (att.content_md or "").encode("utf-8")
+    if not body:
+        raise HTTPException(
+            status_code=410,
+            detail="附件内容已不可用（源文件已被清理）",
+        )
+
     # RFC 5987: the bare filename= part must be ASCII-only (it's sent
     # using latin-1 by browsers), so we fall back to a sanitized
     # ascii-only string when the real filename has non-ASCII chars. The
@@ -272,14 +316,16 @@ async def download_attachment(
     if not ascii_name:
         ascii_name = "download"
     quoted = urllib.parse.quote(att.filename, safe="")
+    disposition_kind = "inline" if inline else "attachment"
     return Response(
         content=body,
         media_type=att.mime_type or "application/octet-stream",
         headers={
             "Content-Disposition": (
-                "attachment; filename=\"" + ascii_name + "\"; "
-                "filename*=UTF-8''" + quoted
+                f"{disposition_kind}; filename=\"{ascii_name}\"; "
+                f"filename*=UTF-8''{quoted}"
             ),
+            "Content-Length": str(len(body)),
         },
     )
 
@@ -310,35 +356,45 @@ async def list_attachments(
 
 @router.post("/batch-meta")
 async def batch_attachment_meta(
-    ids: list[int], session: AsyncSession = Depends(get_session)
+    public_ids: list[str],
+    session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    """Return lightweight metadata (no content) for a list of attachment IDs.
+    """Return lightweight metadata (no content) for a list of attachment public_ids.
 
     Used by the chat bubble to render download cards when scrolling
     through historical messages (where the SSE payload is no longer
-    available). IDs that don't exist are silently skipped.
+    available). public_ids that don't exist are silently skipped.
+
+    Note: this endpoint intentionally accepts only `public_id`s so the
+    server can validate them against the indexed column. Callers that
+    have only an integer id should use the public_id field returned by
+    the upload/list endpoints instead.
     """
-    if not ids:
+    if not public_ids:
         return []
     # De-dup + cap to a reasonable batch so a misbehaving caller can't
     # query thousands of rows in one shot.
-    seen: set[int] = set()
-    wanted: list[int] = []
-    for x in ids:
-        if isinstance(x, int) and x > 0 and x not in seen:
+    seen: set[str] = set()
+    wanted: list[str] = []
+    for x in public_ids:
+        if isinstance(x, str) and x and x not in seen:
             seen.add(x)
             wanted.append(x)
             if len(wanted) >= 200:
                 break
     result = await session.execute(
-        select(Attachment).where(Attachment.id.in_(wanted))
+        select(Attachment).where(Attachment.public_id.in_(wanted))
     )
     return [_serialize(a, include_content=False) for a in result.scalars().all()]
 
 
 def _serialize(att: Attachment, *, include_content: bool = True) -> dict:
     out: dict = {
+        # `public_id` is the unguessable token used in all URLs the
+        # client renders. We keep the integer `id` for callers that
+        # need it for internal joins (e.g. audit log targets).
         "id": att.id,
+        "public_id": att.public_id,
         "group_id": att.group_id,
         "filename": att.filename,
         "mime_type": att.mime_type,

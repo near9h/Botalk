@@ -96,10 +96,10 @@ class MessageOut(BaseModel):
     bot_id: int | None
     content: str
     token_usage: int
-    # IDs of bot-authored attachments surfaced by this message. The UI
-    # renders a download button per ID; backend serves the bytes from
-    # `GET /api/attachments/{id}/download`.
-    attachments: list[int] = []
+    # public_ids of bot-authored attachments surfaced by this message. The
+    # UI renders a download button per token; backend serves the bytes
+    # from `GET /api/attachments/{public_id}/download`.
+    attachments: list[str] = []
     created_at: datetime
 
 

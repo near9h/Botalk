@@ -121,7 +121,7 @@ export function Composer({
   };
 
   const filtered = bots.filter((b) =>
-    b.name.toLowerCase().includes(mentionQuery.toLowerCase()),
+    (b.name ?? "").toLowerCase().includes(mentionQuery.toLowerCase()),
   );
 
   return (

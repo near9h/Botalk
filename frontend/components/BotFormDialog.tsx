@@ -47,6 +47,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
   const [me, setMe] = useState<{ id: number; role: "admin" | "user" } | null>(null);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [generating, setGenerating] = useState(false);
 
   // 拉一下当前用户信息，用来决定能不能改 is_public。
   useEffect(() => {
@@ -127,6 +128,34 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
     setSelectedSkillIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     );
+  };
+
+  // 用当前「名称」调 NewAPI 生成一段默认人设，已填的内容会被覆盖
+  // （编辑模式下同样适用：覆盖该 bot 当前的人设）。
+  const generatePersona = async () => {
+    const cleanName = name.trim();
+    if (!cleanName) {
+      toast.push({ title: "请先填写机器人名称", variant: "error" });
+      return;
+    }
+    if (persona.trim() && !confirm("将覆盖当前人设内容，是否继续？")) {
+      return;
+    }
+    setGenerating(true);
+    try {
+      const res = await api.generatePersona({ name: cleanName });
+      setPersona(res.persona);
+      toast.push({
+        title: "已生成默认人设",
+        description: `模型 ${res.model} · ${res.latency_ms}ms`,
+        variant: "success",
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.push({ title: "人设生成失败", description: msg, variant: "error" });
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const onSubmit = async () => {
@@ -223,12 +252,42 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
               </div>
             </div>
             <div>
-              <Label>人设</Label>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: 6,
+                }}
+              >
+                <Label>人设</Label>
+                <button
+                  type="button"
+                  onClick={generatePersona}
+                  disabled={generating || saving}
+                  title="根据当前名称自动生成默认人设"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "4px 10px",
+                    fontSize: 12,
+                    fontWeight: 500,
+                    color: generating ? "var(--fg-subtle)" : "var(--accent)",
+                    background: "var(--surface-2)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "var(--radius-sm)",
+                    cursor: generating ? "wait" : "pointer",
+                  }}
+                >
+                  {generating ? "⏳ 生成中…" : "✨ AI 生成"}
+                </button>
+              </div>
               <Textarea
                 rows={6}
                 value={persona}
                 onChange={(e) => setPersona(e.target.value)}
-                placeholder="你是一位……"
+                placeholder="你是一位……（点击右上角「AI 生成」自动起草）"
               />
             </div>
             <div style={{ display: "flex", gap: 12 }}>

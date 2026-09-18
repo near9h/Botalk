@@ -22,13 +22,20 @@ from dataclasses import dataclass
 from typing import Any
 
 from openai import AsyncOpenAI
+from pydantic import ValidationError
 
 from app.config import get_settings
 from app.db.models import Bot
 from app.orchestrator.bots import client_for
 from app.skills.resolve import build_system_context, build_tool_schemas, ensure_tools_cached, run_tool_call
+from app.tools.report_schema import PAYLOAD_SCHEMA_DESCRIPTION
 
 settings = get_settings()
+
+# 路线 B: structured-output bots get up to this many attempts to
+# produce a schema-valid JSON reply. Each attempt also slightly drops
+# the temperature so the model is more likely to converge than wander.
+_STRUCT_RETRY_MAX = 3
 
 
 # Match bot-authored file attachments. Two flavors:
@@ -84,8 +91,9 @@ class OrchestratorEvent:
     tool_args: dict[str, Any] | None = None
     # Attachment IDs that the chat layer persisted for this message.
     # Frontend uses this to render download buttons immediately, before
-    # re-fetching the message list.
-    attachments: list[int] | None = None
+    # re-fetching the message list. Tokens are `public_id`s so URLs
+    # aren't enumerable (see Attachment.public_id).
+    attachments: list[str] | None = None
 
 
 # ─────────────────────── speaker-selection policies ───────────────────────
@@ -359,11 +367,63 @@ async def _generate_agent(
         ("\u6a21\u677f" in (s.get("manifest") or {}).get("instructions", ""))
         for s in (skills or [])
     )
+    # 路线 B：bot 的某个 skill manifest 标记了 structured_output=True，
+    # 走「整条回复 = JSON payload」路径，不再下发 generate_document 工具。
+    structured_doc_skill = any(
+        (s.get("manifest") or {}).get("structured_output")
+        for s in (skills or [])
+    )
+
+    # If the doc skill opted into structured output, inject the JSON
+    # schema as a `[文档结构]` block at the end of the system prompt
+    # so the model knows the exact shape we expect. We also drop the
+    # `[文件附件]` prose because it's now redundant with the schema.
+    if structured_doc_skill:
+        system_content += (
+            "\n\n[\u6587\u6863\u7ed3\u6784] \u4f60\u7684\u6574\u6761\u56de\u590d\u5fc5\u987b\u662f\u4e0b\u9762\u8fd9\u4e2a JSON schema \u7684\u552f\u4e00\u5b9e\u4f8b\u3002"
+            "\u4e0d\u8981\u5305\u88f9d\u5728 ``` \u91cc\uff0c\u4e0d\u8981\u5199\u4efb\u4f55\u8bf4\u660e\u6587\u5b57\u3002\n\n"
+            "```json\n" + PAYLOAD_SCHEMA_DESCRIPTION + "\n```"
+        )
+
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_content}
+    ]
+    for h in history:
+        role = h.get("role", "user")
+        if role == "assistant":
+            # Tag assistant turns with the bot name so the model can tell voices apart.
+            name = h.get("name") or "Assistant"
+            content = h["content"]
+            if len(content) > 400:
+                content = content[:400] + "..."
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": f"[{name}] {content}",
+                }
+            )
+        elif role == "user":
+            messages.append({"role": "user", "content": h["content"]})
+
+    # Use a conservative max_tokens for short chat replies; bump it up
+    # for bots with document-writer skills so they can emit a full
+    # document inside a [FILE:foo]…[/FILE] block. Reasoning models
+    # (gemini-2.5) can otherwise spend thousands of tokens on a single
+    # response even for short prompts.
+    #
+    # `stream=False` (synchronous): the orchestrator waits for the entire
+    # reply, then emits one `message_end` with the full text. We tried
+    # `stream=True` first but the resulting per-token SSE frames got
+    # coalesced by nginx/uvicorn/httptools into one chunk per bot reply,
+    # so the UI saw no incremental updates. Since we already collect the
+    # full reply before yielding, switching to the non-streaming OpenAI
+    # call removes one whole buffering layer and the UX stays the same
+    # (bot bubble appears with the full reply at once).
     params: dict = {
         "model": bot.model,
         "messages": messages,
         "temperature": float(bot.temperature),
-        "max_tokens": 4096 if has_doc_skill else 512,
+        "max_tokens": 4096 if (has_doc_skill or structured_doc_skill) else 512,
         "stream": False,
     }
     # Pass-through any user-specified OpenAI params (top_p, frequency_penalty, …).
@@ -373,9 +433,69 @@ async def _generate_agent(
         params[k] = v
 
     tool_schemas = build_tool_schemas(skills) if skills else []
+    # 路线 B: structured doc bots don't get generate_document — they
+    # emit the JSON inline and the orchestrator renders it post-hoc.
+    if structured_doc_skill and tool_schemas:
+        tool_schemas = [
+            t for t in tool_schemas
+            if t.get("function", {}).get("name") != "generate_document"
+        ]
+    # Ask the model for JSON mode (legacy OpenAI option, supported by
+    # every OpenAI-compatible gateway). We deliberately do NOT use
+    # `json_schema` strict mode — NewAPI + several upstreams reject
+    # it with 400. The Pydantic schema + retry handles correctness.
+    if structured_doc_skill:
+        params["response_format"] = {"type": "json_object"}
+
     if tool_schemas:
         params["tools"] = tool_schemas
 
+    if structured_doc_skill:
+        # 路线 B retry loop: parse the reply, on ValidationError feed
+        # the error back to the model and ask it to fix the JSON.
+        # Up to `_STRUCT_RETRY_MAX` rounds, then fall back to whatever
+        # the model produced (treated as legacy free-markdown).
+        from app.tools.report_schema import parse_payload as _parse_payload
+        last_err: str | None = None
+        attempt = 0
+        while True:
+            attempt += 1
+            resp = await client.chat.completions.create(**params)
+            text = _message_text(resp.choices[0].message)
+            try:
+                payload = _parse_payload(text)
+            except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+                last_err = f"{type(exc).__name__}: {exc}"[:600]
+                if attempt >= _STRUCT_RETRY_MAX:
+                    # Give up on structured path. Return the raw text;
+                    # the caller (runner) will hand it to
+                    # generate_document_from_payload which falls back to
+                    # legacy single-docx.
+                    return text
+                # Inject a corrective user message and retry.
+                messages.append({"role": "assistant", "content": text})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "你上一条回复不是合法的 JSON。请按上面的 schema "
+                            "重新生成**整条回复**为一个 JSON 对象，"
+                            "不要再写解释性文字。\n\n校验错误：\n"
+                            f"{last_err}"
+                        ),
+                    }
+                )
+                # Slightly cooler temperature for retries so the model
+                # is more likely to converge than wander.
+                params["messages"] = messages
+                params["temperature"] = max(0.0, float(bot.temperature) - 0.1 * attempt)
+                continue
+            # Success — package the validated JSON as a canonical string
+            # so downstream `generate_document_from_payload` can parse
+            # it deterministically.
+            return payload.model_dump_json()
+
+    # ── legacy path (non-structured bots or old-style doc bots) ──
     resp = await client.chat.completions.create(**params)
     msg = resp.choices[0].message
 
@@ -424,6 +544,7 @@ async def run_group_discussion(
     *,
     attachment_context: str | None = None,
     skills_by_bot: dict[int, list[dict[str, Any]]] | None = None,
+    group_id: int | None = None,
 ) -> AsyncIterator[OrchestratorEvent]:
     """Drive a group chat discussion round by round and stream events.
 
@@ -541,6 +662,52 @@ async def run_group_discussion(
                     tool_args=tool_args,
                 )
 
+            # 路线 B: structured doc bot's reply is a JSON payload
+            # (already validated by `_generate_agent`'s retry path).
+            # Hand it to the Jinja renderer and inject the resulting
+            # attachment IDs into the SSE event so the UI can render
+            # download buttons immediately.
+            #
+            # Detection is intentionally generous: we look at the
+            # manifest `structured_output` flag *and* the bot's name,
+            # so a stale manifest row (or a bot created by hand) still
+            # benefits from 路线 B.
+            structured_doc_skill = any(
+                (s.get("manifest") or {}).get("structured_output")
+                for s in (bot_skills or [])
+            ) or bot.name in {"专业写文档", "doc_writer"}
+            attachments_for_msg: list[str] = []
+            if structured_doc_skill and full:
+                try:
+                    from app.tools.document import generate_document_from_payload
+                    rendered_text, att_ids = await generate_document_from_payload(
+                        full, group_id=group_id
+                    )
+                    if att_ids:
+                        attachments_for_msg = att_ids
+                    # Replace the bot's raw JSON with whatever
+                    # `rendered_text` says — even when there are no
+                    # attachments (parse-failure fallback). Without this
+                    # the user sees the raw JSON blob in the chat
+                    # bubble instead of a friendly summary.
+                    if rendered_text and rendered_text != full:
+                        full = rendered_text
+                except Exception as exc:  # noqa: BLE001
+                    # Never let a render failure crash the chat. The bot's
+                    # raw JSON reply will still appear; just no attachments.
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "render_report_payload failed for bot %s", bot.name
+                    )
+                    yield OrchestratorEvent(
+                        type="tool_call",
+                        bot_id=bot.id,
+                        bot_name=bot.name,
+                        round_index=round_index,
+                        tool_name="render_report_payload",
+                        tool_args={"error": str(exc)[:200]},
+                    )
+
             history.append({"role": "assistant", "name": bot.name, "content": full})
 
             # Extract any @-mentions in this bot's reply and queue them
@@ -557,6 +724,7 @@ async def run_group_discussion(
                 content=full,
                 round_index=round_index,
                 mentions=new_mentions,
+                attachments=attachments_for_msg or None,
             )
 
         if history and any(

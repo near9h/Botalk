@@ -25,24 +25,29 @@ export const md = new MarkdownIt({
 });
 
 // Cache attachment metadata so we can render filename/size on the
-// download card without a second round-trip.
+// download card without a second round-trip. Keyed by `public_id`
+// because that's what the URL scheme uses.
 type AttachmentMeta = {
-  id: number;
+  public_id: string;
   filename: string;
   size_bytes?: number;
 };
-const ATTACHMENT_CACHE: Map<number, AttachmentMeta> = new Map();
+const ATTACHMENT_CACHE: Map<string, AttachmentMeta> = new Map();
 
 /** Called by the chat layer to seed the cache before rendering a message. */
 export function cacheAttachments(attachments: AttachmentMeta[]): void {
   if (!Array.isArray(attachments)) return;
   for (const a of attachments) {
-    if (a && typeof a.id === "number") ATTACHMENT_CACHE.set(a.id, a);
+    if (a && typeof a.public_id === "string" && a.public_id) {
+      ATTACHMENT_CACHE.set(a.public_id, a);
+    }
   }
 }
 
-const _ATTACHMENT_RE = /^attachment:\/\/(\d+)$/;
-const _DOC_LINK_RE = /^\[\s*下载\s*\]\(attachment:\/\/(\d+)\s*\)/;
+// `attachment://<public_id>` — public_id is a URL-safe random token
+// (see Attachment.public_id on the backend), so this regex matches any
+// non-empty path segment rather than restricting to digits.
+const _ATTACHMENT_RE = /^attachment:\/\/([A-Za-z0-9_\-]+)$/;
 
 function _formatBytes(n: number): string {
   if (!Number.isFinite(n)) return "";
@@ -59,26 +64,26 @@ md.renderer.rules.link_open = function (tokens, idx, options, _env, self) {
   const href = token.attrGet("href") || "";
   const m = href.match(_ATTACHMENT_RE);
   if (m) {
-    const id = Number(m[1]);
-    const meta = ATTACHMENT_CACHE.get(id);
-    const fname = meta?.filename || `attachment-${id}`;
+    const publicId = m[1];
+    const meta = ATTACHMENT_CACHE.get(publicId);
+    const fname = meta?.filename || `attachment-${publicId.slice(0, 6)}`;
     const sizeText = meta?.size_bytes ? ` · ${_formatBytes(meta.size_bytes)}` : "";
     // Replace the whole <a>…</a> with a download card. The companion
     // link_close rule below just emits an empty string so the rest of the
     // markdown pipeline stays in sync.
     token.tag = "a";
-    token.attrSet("href", `/api/attachments/${id}/download`);
+    token.attrSet("href", `/api/attachments/${publicId}/download`);
     token.attrSet("download", fname);
     token.attrSet("class", "md-attachment-card");
-    token.attrSet("data-attachment-id", String(id));
+    token.attrSet("data-attachment-id", publicId);
     // Inline label inside the link.
     return (
       '<a href="/api/attachments/' +
-      id +
+      publicId +
       '/download" download="' +
       escapeAttr(fname) +
       '" class="md-attachment-card" data-attachment-id="' +
-      id +
+      publicId +
       '" target="_self" rel="noopener">📄 ' +
       escapeAttr(fname) +
       '<span class="md-attachment-meta">' +
@@ -186,6 +191,7 @@ export function renderMessageWithMentions(
   // 3. Otherwise keep the literal `@name` text and let markdown render it.
   const knownNames = new Map<string, Bot>();
   for (const b of knownBots) {
+    if (!b.name) continue;
     knownNames.set(b.name.toLowerCase(), b);
   }
 

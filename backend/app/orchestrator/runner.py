@@ -128,7 +128,16 @@ async def save_message(
     content: str,
     bot_id: int | None = None,
     token_usage: int = 0,
+    attachments: list[str] | None = None,
 ) -> Message:
+    """Persist one chat turn to `messages`.
+
+    `attachments` is the list of attachment `public_id`s that this
+    message produced (for bot turns) or referenced (for user turns).
+    The column is JSON so callers can store anything that
+    round-trips, but the doc-writer pipeline (路线 B) always passes
+    `list[str]` of public_ids.
+    """
     msg = Message(
         run_id=run_id,
         group_id=group_id,
@@ -136,6 +145,7 @@ async def save_message(
         bot_id=bot_id,
         content=content,
         token_usage=token_usage,
+        attachments=list(attachments or []),
     )
     session.add(msg)
     # If this is the first user message of a still-untitled task,

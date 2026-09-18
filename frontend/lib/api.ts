@@ -54,7 +54,8 @@ export type Message = {
   bot_id: number | null;
   content: string;
   token_usage: number;
-  attachments: number[];
+  // public_ids of bot-authored attachments surfaced by this message.
+  attachments: string[];
   created_at: string;
 };
 
@@ -124,6 +125,12 @@ export type ModelTestResult = {
   completion_tokens: number | null;
   total_tokens: number | null;
   error: string | null;
+};
+
+export type GeneratePersonaResult = {
+  persona: string;
+  model: string;
+  latency_ms: number;
 };
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -267,9 +274,12 @@ export const api = {
   // 审计日志（admin-only）
   listAuditLogs: (params: {
     actor_id?: number;
+    actor_role?: string;
     action?: string;
     target_type?: string;
     target_id?: string;
+    status?: string;
+    ip?: string;
     from?: string;
     to?: string;
     limit?: number;
@@ -314,6 +324,11 @@ export const api = {
   listModels: () => request<{ data: ModelInfo[]; cached: boolean }>("/api/models"),
   testModel: (body: { model: string; prompt?: string; temperature?: number }) =>
     request<ModelTestResult>("/api/models/test", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  generatePersona: (body: { name: string; hint?: string }) =>
+    request<GeneratePersonaResult>("/api/bots/generate-persona", {
       method: "POST",
       body: JSON.stringify(body),
     }),
@@ -399,10 +414,10 @@ export const api = {
     request<AttachmentMeta[]>(
       `${API_BASE}/api/attachments${groupId != null ? `?group_id=${groupId}` : ""}`,
     ),
-  batchAttachmentMeta: (ids: number[]) =>
+  batchAttachmentMeta: (publicIds: string[]) =>
     request<AttachmentMeta[]>("/api/attachments/batch-meta", {
       method: "POST",
-      body: JSON.stringify(ids),
+      body: JSON.stringify(publicIds),
     }),
   uploadAttachment: (file: File, groupPublicId?: string) => {
     const fd = new FormData();
@@ -421,6 +436,8 @@ export const api = {
 
 export type Attachment = {
   id: number;
+  // Unguessable download token (see Attachment.public_id on backend).
+  public_id: string;
   group_id: number | null;
   filename: string;
   mime_type: string;
@@ -437,7 +454,13 @@ export type Attachment = {
 // Bot-authored attachment metadata surfaced by the chat layer so the
 // bubble can render a download card without a second fetch.
 export type AttachmentMeta = {
+  // Backend integer PK; opaque to the UI, kept for callers that need it
+  // for internal joins. URLs in the UI always use `public_id`.
   id: number;
+  // Unguessable token used in `/api/attachments/<public_id>/download`
+  // and `attachment://<public_id>` markdown links. Replaces the
+  // integer id so URLs aren't enumerable.
+  public_id: string;
   filename: string;
   mime_type: string;
   size_bytes: number;
@@ -475,7 +498,7 @@ export function streamChat(
   body: {
     group_public_id: string;
     prompt: string;
-    attachment_ids?: number[];
+    attachment_ids?: string[];
     // Append this prompt into an existing task instead of opening a new
     // one. The chat UI calls POST /api/tasks up front when the user
     // hits "新会话", then includes the returned token here so the first
@@ -554,8 +577,11 @@ export function streamChat(
 
 // ──────────────────── model vendor helpers ────────────────────
 
-export function vendorOfModelId(id: string): string {
-  const m = id.toLowerCase();
+export function vendorOfModelId(id: string | null | undefined): string {
+  // Defensive: a bot row missing a model id used to crash here with
+  // "Cannot read properties of undefined (reading 'toLowerCase')".
+  const m = (id ?? "").toLowerCase();
+  if (!m) return "other";
   if (m.includes("gpt") || m.includes("o1") || m.includes("o3") || m.includes("o4") || m.includes("chatgpt")) return "openai";
   if (m.includes("claude")) return "anthropic";
   if (m.includes("gemini")) return "google";
