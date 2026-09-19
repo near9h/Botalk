@@ -28,6 +28,9 @@ export type Bot = {
   scope?: "system" | "user";
   // 公开分享：私有 bot 标记后所有用户可见
   is_public?: boolean;
+  // Stage 3 / Stage 5: ids of knowledge bases this bot has mounted.
+  // Surfaced by `GET /api/bots` and editable via PATCH /api/bots/{id}.
+  kb_ids?: number[];
   created_at: string;
 };
 
@@ -43,6 +46,9 @@ export type Group = {
   owner_id?: number | null;
   owner_username?: string | null;
   scope?: "system" | "user";
+  // 群级「群通知 / 群规」追加文本。平台级规则见 GroupPolicy，
+  // 注入时平台规则始终在前且不可被 notice 覆盖。
+  notice: string;
   created_at: string;
 };
 
@@ -56,6 +62,10 @@ export type Message = {
   token_usage: number;
   // public_ids of bot-authored attachments surfaced by this message.
   attachments: string[];
+  // Stage 3 / Stage 4: KB citations persisted alongside the message so
+  // /api/messages can re-render SourceCitation chips on page refresh
+  // without re-running retrieval. Mirrors the SSE `cited_refs` payload.
+  cited_refs?: CitedRef[];
   created_at: string;
 };
 
@@ -114,6 +124,67 @@ export type BotSkill = {
   skill: Skill;
   config: Record<string, unknown>;
   enabled: boolean;
+};
+
+// ──────────────────── knowledge base (Stage 1-5) ────────────────────
+//
+// CitedRef is the citation metadata attached to a bot reply when the
+// orchestrator injected KB context into the prompt. The chat layer
+// forwards it via SSE `cited_refs` and persists it on the message row
+// so /api/messages can re-render the chips without re-running retrieval.
+//
+// KnowledgeBase is the KB itself (CRUD via /api/kb). KbDocument is one
+// ingested source file. KbChunk is one retrieval hit — what the PDF
+// viewer overlays a bbox on top of.
+
+export type CitedRef = {
+  chunk_id: number;
+  kb_id: number;
+  kb_doc_id: number;
+  filename: string;
+  page: number | null;
+  para: number | null;
+  bbox: [number, number, number, number] | null;
+  snippet: string;
+  score: number;
+  ragflow_chunk_id: string | null;
+  // Pre-formatted `[doc: filename p.X ¶Y]` key from the backend so the
+  // markdown renderer can match without re-parsing the filename.
+  citation_key: string;
+};
+
+export type KnowledgeBase = {
+  id: number;
+  name: string;
+  description: string;
+  is_public: boolean;
+  ragflow_dataset_id: string | null;
+  created_at: string;
+};
+
+export type KbDocument = {
+  id: number;
+  kb_id: number;
+  attachment_id: number;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  // pending | parsing | ready | failed
+  status: string;
+  error: string;
+  chunk_count: number;
+  ragflow_doc_id: string | null;
+  created_at: string;
+};
+
+export type KbChunk = {
+  id: number;
+  kb_doc_id: number;
+  ragflow_chunk_id: string | null;
+  page: number | null;
+  para: number | null;
+  bbox_json: number[] | null;
+  snippet: string;
 };
 
 export type ModelTestResult = {
@@ -176,6 +247,25 @@ export type AuditLog = {
   detail: Record<string, unknown>;
 };
 
+// ──────────────────── 平台群规 / 防火墙规则 ────────────────────
+
+export type PolicyRule = {
+  id?: string | null;
+  title: string;
+  content: string;
+  enabled: boolean;
+};
+
+export type GroupPolicy = {
+  enabled: boolean;
+  rules: PolicyRule[];
+  // 后端用与注入完全相同的渲染逻辑算出的「平台群规段」文本。
+  // 管理页直接展示它，无需前端复刻渲染规则。无规则时为 null。
+  preview: string | null;
+  updated_at: string | null;
+  updated_by_username: string | null;
+};
+
 export const api = {
   // Auth
   me: () => request<User | null>("/api/auth/me"),
@@ -205,8 +295,13 @@ export const api = {
 
   listGroups: () => request<Group[]>("/api/groups"),
   createGroup: (
-    body: Omit<Group, "public_id" | "created_at" | "owner_id" | "scope"> & {
+    body: Omit<
+      Group,
+      "public_id" | "created_at" | "owner_id" | "scope" | "notice"
+    > & {
       scope?: "system" | "user";
+      // 群级群规（创建时可选）。
+      notice?: string;
     },
   ) =>
     request<Group>("/api/groups", {
@@ -301,6 +396,14 @@ export const api = {
     request<{ total_last_24h: number; by_action: Array<{ action: string; count: number }>; by_actor: Array<{ actor: string; count: number }> }>(
       "/api/audit/stats",
     ),
+
+  // 平台群规 / 防火墙规则。读：所有登录用户；写：仅管理员。
+  getPolicy: () => request<GroupPolicy>("/api/policies"),
+  updatePolicy: (body: { enabled: boolean; rules: PolicyRule[] }) =>
+    request<GroupPolicy>("/api/policies", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
 
   // Tasks (user-facing alias of Runs): one task = one user turn + the
   // multi-bot reply it triggered. The chat UI binds every message to
@@ -432,6 +535,48 @@ export const api = {
       return (await r.json()) as Attachment;
     });
   },
+
+  // ── Knowledge bases (Stage 5) ──
+  // CRUD wrappers for /api/kb. Uploads use FormData (multipart) so we
+  // can't reuse the JSON `request` helper; instead each upload path
+  // builds its own fetch.
+  listKbs: () => request<KnowledgeBase[]>("/api/kb"),
+  createKb: (body: { name: string; description?: string; is_public?: boolean }) =>
+    request<KnowledgeBase>("/api/kb", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getKb: (kbId: number) => request<KnowledgeBase>(`/api/kb/${kbId}`),
+  deleteKb: (kbId: number) =>
+    request<void>(`/api/kb/${kbId}`, { method: "DELETE" }),
+  listKbDocuments: (kbId: number) =>
+    request<KbDocument[]>(`/api/kb/${kbId}/documents`),
+  getKbDocument: (kbId: number, docId: number) =>
+    request<KbDocument>(`/api/kb/${kbId}/documents/${docId}`),
+  deleteKbDocument: (kbId: number, docId: number) =>
+    request<void>(`/api/kb/${kbId}/documents/${docId}`, {
+      method: "DELETE",
+    }),
+  getKbChunk: (kbId: number, chunkId: number) =>
+    request<KbChunk>(`/api/kb/${kbId}/chunks/${chunkId}`),
+  // Stage 5 fix: per-doc chunk listing (drives the KB-detail page's
+  // chunk preview). Added in the same backend route pass as the
+  // single-chunk endpoint; the route is order-sensitive so the
+  // server-side docstring explains why.
+  listKbDocumentChunks: (kbId: number, docId: number) =>
+    request<KbChunk[]>(`/api/kb/${kbId}/documents/${docId}/chunks`),
+  uploadKbDocument: (kbId: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return fetch(`${API_BASE}/api/kb/${kbId}/documents`, {
+      method: "POST",
+      body: fd,
+      credentials: "include",
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
+      return (await r.json()) as KbDocument;
+    });
+  },
 };
 
 export type Attachment = {
@@ -488,6 +633,9 @@ export type ChatEvent =
         content: string;
         round_index?: number;
         attachments?: AttachmentMeta[];
+        // Stage 3: KB citation metadata. Always present (possibly `[]`)
+        // for `bot`/`summary` messages; absent for `user`/`system` events.
+        cited_refs?: CitedRef[];
       };
     }
   | { event: "tool_call"; data: { bot_id: number | null; tool_name: string; tool_args?: Record<string, unknown> } }

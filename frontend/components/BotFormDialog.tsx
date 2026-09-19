@@ -14,7 +14,7 @@ import {
   Textarea,
   useToast,
 } from "@/components/ui";
-import { api, Bot, ModelInfo, Skill, SkillAsset } from "@/lib/api";
+import { api, Bot, KnowledgeBase, ModelInfo, Skill, SkillAsset } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 
 type Props = {
@@ -43,6 +43,13 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<number[]>([]);
+  // Stage 5: KB tab. `kbs` is the full list the user can mount; the
+  // `selectedKbIds` mirrors `initial.kb_ids` (or starts empty for a
+  // new bot). The "skills" / "knowledge" tabs are mutually exclusive —
+  // a bot can mount skills OR KBs without one polluting the other.
+  const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
+  const [selectedKbIds, setSelectedKbIds] = useState<number[]>([]);
+  const [rightTab, setRightTab] = useState<"skills" | "knowledge">("skills");
   const [isPublic, setIsPublic] = useState(false);
   const [me, setMe] = useState<{ id: number; role: "admin" | "user" } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -67,6 +74,10 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
       setTemperature(initial.temperature);
       setParamsText(JSON.stringify(initial.params || {}, null, 2));
       setIsPublic(Boolean(initial.is_public));
+      // Stage 5: hydrate the KB selection from the server-rendered
+      // `kb_ids` array (see api.bots patch response). Fall back to
+      // empty when the field isn't present (older payloads).
+      setSelectedKbIds(Array.isArray(initial.kb_ids) ? initial.kb_ids : []);
     } else {
       setName("");
       setEmoji("🤖");
@@ -75,6 +86,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
       setTemperature(0.7);
       setParamsText("{}");
       setSelectedSkillIds([]);
+      setSelectedKbIds([]);
       setIsPublic(false);
     }
   }, [open, initial]);
@@ -90,14 +102,18 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
     let alive = true;
     (async () => {
       try {
-        const [all, current, modelsResp] = await Promise.all([
+        const [all, current, modelsResp, kbsResp] = await Promise.all([
           api.listSkills(),
           initial ? api.getBotSkills(initial.id) : Promise.resolve([]),
           api.listModels().catch(() => null),
+          // Stage 5: KB list — backend enforces visibility, so an
+          // unprivileged user only sees their own + is_public KBs.
+          api.listKbs().catch(() => []),
         ]);
         if (!alive) return;
         setSkills(all);
         setModels(modelsResp?.data ?? []);
+        setKbs(kbsResp ?? []);
         const enabledIds = current
           .filter((bs) => bs.enabled)
           .map((bs) => bs.skill.id);
@@ -197,6 +213,11 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
         // Save the enabled skill set in one shot. backend returns the
         // final list so we can re-render the parent without a refetch.
         await api.setBotSkills(botId, selectedSkillIds);
+        // Stage 5: persist KB mounts. Backend treats `kb_ids` as a
+        // full overwrite (absent = no change; [] = unmount all;
+        // list = idempotent bind). Sending the same list twice is a
+        // no-op so we don't bother diffing locally.
+        await api.updateBot(botId, { kb_ids: selectedKbIds } as Partial<Bot>);
       }
       toast.push({
         title: initial ? "已保存" : "已创建",
@@ -385,7 +406,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
             )}
           </div>
 
-          {/* 右栏：技能选项页 */}
+          {/* 右栏：技能 / 知识库 tab */}
           <div
             style={{
               display: "flex",
@@ -404,9 +425,24 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                 justifyContent: "space-between",
               }}
             >
-              <Label>技能（多选）</Label>
+              <div style={{ display: "flex", gap: 6 }}>
+                <TabButton
+                  active={rightTab === "skills"}
+                  onClick={() => setRightTab("skills")}
+                >
+                  🧩 技能
+                </TabButton>
+                <TabButton
+                  active={rightTab === "knowledge"}
+                  onClick={() => setRightTab("knowledge")}
+                >
+                  📚 知识库
+                </TabButton>
+              </div>
               <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>
-                {selectedSkillIds.length} / {skills.length} 已选
+                {rightTab === "skills"
+                  ? `${selectedSkillIds.length} / ${skills.length} 已选`
+                  : `${selectedKbIds.length} / ${kbs.length} 已挂载`}
               </span>
             </div>
             <div
@@ -423,7 +459,73 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                 background: "var(--surface-2)",
               }}
             >
-              {skills.length === 0 ? (
+              {rightTab === "skills" ? (
+                skills.length === 0 ? (
+                  <div
+                    style={{
+                      color: "var(--fg-subtle)",
+                      fontSize: 12,
+                      textAlign: "center",
+                      padding: 24,
+                    }}
+                  >
+                    暂无技能，请先到「技能中心」启用。
+                  </div>
+                ) : (
+                  skills.map((s) => {
+                    const active = selectedSkillIds.includes(s.id);
+                    const assetCount = ((s.manifest?.assets as SkillAsset[]) || []).length;
+                    return (
+                      <label
+                        key={s.id}
+                        style={{
+                          display: "flex",
+                          gap: 10,
+                          padding: 10,
+                          borderRadius: "var(--radius-sm)",
+                          border: active
+                            ? "1px solid rgba(167, 139, 250, 0.55)"
+                            : "1px solid var(--border)",
+                          background: active
+                            ? "rgba(167, 139, 250, 0.10)"
+                            : "var(--surface-solid)",
+                          cursor: "pointer",
+                          transition: "all var(--transition)",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={active}
+                          onChange={() => toggleSkill(s.id)}
+                          style={{ marginTop: 2 }}
+                        />
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: 16 }}>{s.icon || "🧩"}</span>
+                            <span style={{ fontSize: 13, fontWeight: 500 }}>{s.name}</span>
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: "var(--fg-subtle)",
+                              marginTop: 2,
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            {s.description || "（无描述）"}
+                            {assetCount > 0 && (
+                              <span style={{ marginLeft: 6, color: "var(--accent)" }}>
+                                · {assetCount} 模板
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })
+                )
+              ) : // knowledge tab
+              kbs.length === 0 ? (
                 <div
                   style={{
                     color: "var(--fg-subtle)",
@@ -432,25 +534,24 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                     padding: 24,
                   }}
                 >
-                  暂无技能，请先到「技能中心」启用。
+                  暂无可挂载的知识库，请先到「知识库」页创建。
                 </div>
               ) : (
-                skills.map((s) => {
-                  const active = selectedSkillIds.includes(s.id);
-                  const assetCount = ((s.manifest?.assets as SkillAsset[]) || []).length;
+                kbs.map((k) => {
+                  const active = selectedKbIds.includes(k.id);
                   return (
                     <label
-                      key={s.id}
+                      key={k.id}
                       style={{
                         display: "flex",
                         gap: 10,
                         padding: 10,
                         borderRadius: "var(--radius-sm)",
                         border: active
-                          ? "1px solid rgba(167, 139, 250, 0.55)"
+                          ? "1px solid rgba(34, 197, 94, 0.55)"
                           : "1px solid var(--border)",
                         background: active
-                          ? "rgba(167, 139, 250, 0.10)"
+                          ? "rgba(34, 197, 94, 0.08)"
                           : "var(--surface-solid)",
                         cursor: "pointer",
                         transition: "all var(--transition)",
@@ -459,13 +560,40 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                       <input
                         type="checkbox"
                         checked={active}
-                        onChange={() => toggleSkill(s.id)}
+                        onChange={() =>
+                          setSelectedKbIds((prev) =>
+                            prev.includes(k.id)
+                              ? prev.filter((x) => x !== k.id)
+                              : [...prev, k.id],
+                          )
+                        }
                         style={{ marginTop: 2 }}
                       />
                       <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <span style={{ fontSize: 16 }}>{s.icon || "🧩"}</span>
-                          <span style={{ fontSize: 13, fontWeight: 500 }}>{s.name}</span>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                          }}
+                        >
+                          <span style={{ fontSize: 16 }}>📚</span>
+                          <span style={{ fontSize: 13, fontWeight: 500 }}>
+                            {k.name}
+                          </span>
+                          {k.is_public && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                padding: "1px 6px",
+                                borderRadius: 999,
+                                background: "rgba(34, 197, 94, 0.18)",
+                                color: "#166534",
+                              }}
+                            >
+                              公开
+                            </span>
+                          )}
                         </div>
                         <div
                           style={{
@@ -475,10 +603,10 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                             lineHeight: 1.4,
                           }}
                         >
-                          {s.description || "（无描述）"}
-                          {assetCount > 0 && (
-                            <span style={{ marginLeft: 6, color: "var(--accent)" }}>
-                              · {assetCount} 模板
+                          {k.description || "（无描述）"}
+                          {!k.ragflow_dataset_id && (
+                            <span style={{ marginLeft: 6, color: "var(--danger)" }}>
+                              · 尚未初始化（等待首次上传）
                             </span>
                           )}
                         </div>
@@ -500,5 +628,37 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        padding: "4px 12px",
+        fontSize: 12,
+        fontWeight: 500,
+        borderRadius: 999,
+        background: active ? "var(--accent)" : "var(--surface-solid)",
+        color: active ? "white" : "var(--fg-muted)",
+        border: active
+          ? "1px solid var(--accent)"
+          : "1px solid var(--border)",
+        cursor: "pointer",
+        transition: "all var(--transition)",
+      }}
+    >
+      {children}
+    </button>
   );
 }

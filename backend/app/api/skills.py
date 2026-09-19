@@ -30,6 +30,7 @@ from app.schemas import (
     SkillOut,
 )
 from app.services import mcp as mcp_service
+from app.services import community as community_service
 
 router = APIRouter()
 settings = get_settings()
@@ -56,6 +57,16 @@ def _skill_dict(skill: Skill, bot_count: int = 0) -> dict[str, Any]:
 async def _bot_counts(session: AsyncSession) -> dict[int, int]:
     result = await session.execute(select(BotSkill.skill_id, func.count(BotSkill.bot_id)).group_by(BotSkill.skill_id))
     return {skill_id: count for skill_id, count in result.all()}
+
+
+async def _unique_key(session: AsyncSession, base: str) -> str:
+    """返回一个未被占用的技能 key：冲突时依次追加 `-2`、`-3` …"""
+    key = base
+    n = 1
+    while (await session.execute(select(Skill).where(Skill.key == key))).scalar_one_or_none():
+        n += 1
+        key = f"{base}-{n}"
+    return key
 
 
 @router.get("")
@@ -357,6 +368,145 @@ async def import_mcp(
         category="mcp",
         icon="🔌",
         manifest={"url": payload.url, "transport": payload.transport, "tools": tools},
+        config_schema={},
+        builtin=False,
+    )
+    session.add(skill)
+    await session.commit()
+    await session.refresh(skill)
+    return _to_out(skill)
+
+
+# ─────────────────────────── community search ───────────────────────────
+#
+# 聚合三个社区来源：MCP Marketplace / findskill.md / anthropics-skills。
+# 实现见 `app.services.community.search_community`：三路并发抓取，单个来源
+# 失败不影响其它来源；失败详情以 `{"__health__": true, "errors": {...}}`
+# 追加在结果末尾，前端据此渲染「GitHub 限流」之类的顶部警告条。
+#
+# 注意：本路由必须声明在 `/{skill_id}` 之前没有硬性要求（`community/search`
+# 是两段路径，不会被单段的 `/{skill_id}` 匹配到），但保持读写权限与
+# `GET /api/skills` 一致：任何登录用户可搜索，导入/安装才需要管理员。
+
+
+@router.get("/community/search")
+async def community_search(
+    q: str,
+    _user: Any = Depends(require_user),
+) -> list[dict[str, Any]]:
+    """搜索社区技能市场，返回按来源打分去重后的结果列表。"""
+    query = (q or "").strip()
+    if not query:
+        return []
+    return await community_service.search_community(query)
+
+
+# ─────────────────────────── community install ───────────────────────────
+#
+# 把一条社区搜索结果落库成本地技能，两条路径：
+#
+#   * MCP Marketplace 条目 → 连上 MCP server 枚举 tools，存成 `mcp` 技能。
+#   * GitHub SKILL.md 条目（`source ∈ {anthropic, findskill}`）→ 拉取
+#     SKILL.md 正文，存成 `knowledge` 技能（正文写入 `manifest.instructions`）。
+#
+# 与 `/import/mcp` 一致：属于写操作，仅管理员可用。
+
+
+@router.post("/community/install", response_model=SkillOut, status_code=201)
+async def community_install(
+    payload: dict[str, Any],
+    session: AsyncSession = Depends(get_session),
+    _admin: Any = Depends(require_admin),
+) -> SkillOut:
+    """安装一条社区搜索结果，返回落库后的技能。"""
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url 不能为空")
+    transport = (payload.get("transport") or "streamable-http").strip()
+    name = (payload.get("name") or "").strip()
+    description = (payload.get("description") or "").strip()
+    source = (payload.get("source") or "").strip()
+
+    # ── GitHub SKILL.md 安装路径 ──
+    if source in ("anthropic", "findskill"):
+        try:
+            from app.services.community import FINDSKILL_REPO, _b64_to_text, _gh_token_headers
+
+            # url 形如 https://github.com/<owner>/<repo>/tree/<branch>/skills/<name>
+            m = re.search(r"github\.com/([^/]+)/([^/]+)/tree/[^/]+/skills/([^/]+)", url)
+            if m:
+                repo = f"{m.group(1)}/{m.group(2)}"
+                skill_dir = m.group(3)
+            else:
+                m2 = re.search(r"github\.com/([^/]+)/([^/]+)", url)
+                repo = f"{m2.group(1)}/{m2.group(2)}" if m2 else FINDSKILL_REPO
+                skill_dir = url.rstrip("/").rsplit("/", 1)[-1]
+
+            api_url = f"https://api.github.com/repos/{repo}/contents/skills/{skill_dir}/SKILL.md"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.get(api_url, headers=_gh_token_headers())
+                if r.status_code != 200:
+                    raise RuntimeError(f"GitHub {r.status_code}")
+            skill_md = _b64_to_text(r.json().get("content", ""))
+            if not skill_md.strip():
+                raise RuntimeError("SKILL.md 为空")
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"拉取 SKILL.md 失败: {exc}")
+
+        # 解析 frontmatter 里的 name / description 作为兜底
+        meta: dict[str, str] = {}
+        if skill_md.startswith("---"):
+            end = skill_md.find("\n---", 3)
+            if end > 0:
+                for line in skill_md[3:end].splitlines():
+                    if ":" in line:
+                        k, v = line.split(":", 1)
+                        meta[k.strip()] = v.strip().strip('"').strip("'")
+
+        final_name = name or meta.get("name", "") or skill_dir
+        final_desc = description or meta.get("description", "")
+        key = await _unique_key(session, _KEY_RE.sub("-", final_name.strip().lower()) or "community-skill")
+        skill = Skill(
+            key=key,
+            name=final_name,
+            description=final_desc,
+            type="knowledge",
+            category="custom",
+            icon="📚",
+            manifest={
+                "instructions": skill_md,
+                "source": source,
+                "source_url": url,
+                "assets": [],
+            },
+            config_schema={
+                "assets": {"type": "list", "label": "模板资源", "accept": [".md", ".markdown", ".txt"]},
+            },
+            builtin=False,
+        )
+        session.add(skill)
+        await session.commit()
+        await session.refresh(skill)
+        return _to_out(skill)
+
+    # ── MCP 安装路径（默认）──
+    try:
+        tools = await mcp_service.list_tools(url, transport)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"连接 MCP server 失败: {exc}")
+    if not tools:
+        raise HTTPException(status_code=400, detail="MCP server 未暴露任何 tools")
+
+    final_name = name or url.rstrip("/").rsplit("/", 1)[-1] or "MCP 技能"
+    key = await _unique_key(session, _KEY_RE.sub("-", final_name.strip().lower()) or "mcp-skill")
+    skill = Skill(
+        key=key,
+        name=final_name,
+        description=description or f"来自 MCP marketplace 的 {len(tools)} 个工具",
+        type="mcp",
+        category="mcp",
+        icon="🔌",
+        manifest={"url": url, "transport": transport, "tools": tools},
         config_schema={},
         builtin=False,
     )

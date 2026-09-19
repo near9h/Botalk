@@ -1,0 +1,1 @@
+"""Background worker modules (KB ingest, future email/audit sweepers)."""

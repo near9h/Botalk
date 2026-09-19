@@ -24,6 +24,7 @@ from app.orchestrator.runner import (
 )
 from app.schemas import ChatRequest
 from app.services import audit as audit_service
+from app.services.policy import build_policy_block
 
 router = APIRouter()
 settings = get_settings()
@@ -167,6 +168,11 @@ async def stream_chat(
                     }
                 )
 
+            # 平台「群规 / 防火墙规则」+ 本群 notice，渲染成一段文本。
+            # 每个请求只算一次，保证同一次讨论内每个 bot、每一轮看到的
+            # 规则完全一致（也避免逐轮重复查库）。
+            policy_block = await build_policy_block(ss, group)
+
             async for ev in run_group_discussion(
                 bots=bots,
                 user_prompt=payload.prompt,
@@ -176,6 +182,7 @@ async def stream_chat(
                 attachment_context=extra_context,
                 skills_by_bot=skills_by_bot,
                 group_id=group_id_int,
+                policy_block=policy_block,
             ):
                 # Persist every user/bot message into chat so the
                 # history list shows attachments the bot produced
@@ -195,6 +202,10 @@ async def stream_chat(
                             # them as-is so /api/messages and the SSE
                             # payload match the URL convention.
                             attachments=ev.attachments or None,
+                            # Stage 3: persist RAG citation metadata so
+                            # /api/messages can re-render citations on
+                            # refresh without re-running retrieval.
+                            cited_refs=ev.cited_refs or None,
                         )
                     except Exception as exc:  # noqa: BLE001
                         # Never let persistence failures break the

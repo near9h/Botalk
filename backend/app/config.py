@@ -72,6 +72,33 @@ class Settings(BaseSettings):
     # 审计日志保留天数；超过的记录会被后台清理任务删除。设为 0 关闭清理。
     audit_retention_days: int = 90
 
+    # ─────────────────────── RAG / 知识库 ───────────────────────
+    # RAGFlow HTTP API. Empty disables RAG entirely (BotGroup falls back to
+    # the no-knowledge-base path). Set RAGFLOW_BASE_URL=http://ragflow:9380
+    # inside docker-compose, or to the host:port when running outside.
+    ragflow_base_url: str = ""
+    ragflow_api_key: str = ""
+    # Number of chunks to retrieve per bot turn before rerank.
+    ragflow_top_k: int = 12
+    # Number of chunks kept after rerank → injected into the prompt.
+    ragflow_top_n_after_rerank: int = 5
+    # Score threshold (0-1). Chunks below this are dropped before rerank.
+    ragflow_score_threshold: float = 0.30
+    # Switches off RAG even if RAGFLOW_BASE_URL is set — handy for staged
+    # rollouts where one bot family still needs the legacy path.
+    rag_enabled: bool = True
+
+    # 智谱 GLM embedding + rerank. Same endpoint base as their PaaS API.
+    zhipuai_api_key: str = ""
+    zhipuai_base_url: str = "https://open.bigmodel.cn/api/paas"
+    # embedding-3 (latest) or embedding-2 (legacy). Defaults to embedding-3.
+    zhipuai_embedding_model: str = "embedding-3"
+    # Rerank endpoint — "rerank" set to the model id on RAG/Paas.
+    zhipuai_rerank_model: str = "rerank"
+    # When True, skip rerank and rank by RAGFlow similarity only. Useful
+    # during dev when GLM rerank quota is exhausted.
+    zhipuai_rerank_enabled: bool = True
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

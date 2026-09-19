@@ -87,22 +87,20 @@ async def search_community(query: str) -> list[dict[str, Any]]:
 
     # Track per-source health so the UI can surface "GitHub rate limited,
     # add GITHUB_TOKEN to .env" instead of silently showing fewer results.
+    # 空结果不算故障：搜索词没有命中属于正常情况，只有请求本身失败才记 health。
     health: dict[str, str] = {}
 
-    async def _safe(source: str, coro, warn_on_empty: bool = False) -> list[dict[str, Any]]:
+    async def _safe(source: str, coro) -> list[dict[str, Any]]:
         try:
-            out = list(await coro)
-            if warn_on_empty and not out:
-                health[source] = "未返回结果（可能 GitHub 接口限流或仓库不存在）"
-            return out
+            return list(await coro)
         except Exception as exc:
             health[source] = str(exc)[:200]
             return []
 
     mcp_results, findskill_results, anthropic_results = await asyncio.gather(
         _safe("mcp_marketplace", _search_mcp_marketplace(query)),
-        _safe("findskill", _search_findskill(query), warn_on_empty=True),
-        _safe("anthropic", _search_anthropic(query), warn_on_empty=True),
+        _safe("findskill", _search_findskill(query)),
+        _safe("anthropic", _search_anthropic(query)),
     )
 
     merged = mcp_results + findskill_results + anthropic_results
@@ -185,26 +183,21 @@ def _extract_market_score(raw: str) -> float | None:
 async def _search_findskill(query: str) -> list[dict[str, Any]]:
     """List the `skills/` sub-dirs of addyosmani/agent-skills, read each
     SKILL.md frontmatter (name, description), and filter by query."""
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            contents_resp = await client.get(
-                f"{GITHUB_API}/repos/{FINDSKILL_REPO}/contents/skills",
-                headers=_gh_token_headers(),
-            )
-            repo_resp = await client.get(
-                f"{GITHUB_API}/repos/{FINDSKILL_REPO}",
-                headers=_gh_token_headers(),
-            )
-        if contents_resp.status_code == 403:
-            raise RuntimeError("GitHub API 403（限流，请配置 GITHUB_TOKEN）")
-        if contents_resp.status_code != 200:
-            return []
-        contents = contents_resp.json()
-        stars = repo_resp.json().get("stargazers_count", 0) if repo_resp.status_code == 200 else 0
-    except RuntimeError:
-        raise
-    except Exception:
-        return []
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        contents_resp = await client.get(
+            f"{GITHUB_API}/repos/{FINDSKILL_REPO}/contents/skills",
+            headers=_gh_token_headers(),
+        )
+        repo_resp = await client.get(
+            f"{GITHUB_API}/repos/{FINDSKILL_REPO}",
+            headers=_gh_token_headers(),
+        )
+    if contents_resp.status_code == 403:
+        raise RuntimeError("GitHub API 403（限流，请配置 GITHUB_TOKEN）")
+    if contents_resp.status_code != 200:
+        raise RuntimeError(f"GitHub API {contents_resp.status_code}（{FINDSKILL_REPO}/skills 不可用）")
+    contents = contents_resp.json()
+    stars = repo_resp.json().get("stargazers_count", 0) if repo_resp.status_code == 200 else 0
 
     items: list[dict[str, Any]] = []
     sem = asyncio.Semaphore(8)
@@ -261,26 +254,21 @@ async def _search_findskill(query: str) -> list[dict[str, Any]]:
 async def _search_anthropic(query: str) -> list[dict[str, Any]]:
     """List top-level sub-dirs of anthropics/skills, fetch each SKILL.md
     frontmatter (name, description), and filter by query."""
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            contents_resp = await client.get(
-                f"{GITHUB_API}/repos/{ANTHROPIC_REPO}/contents/skills",
-                headers=_gh_token_headers(),
-            )
-            repo_resp = await client.get(
-                f"{GITHUB_API}/repos/{ANTHROPIC_REPO}",
-                headers=_gh_token_headers(),
-            )
-        if contents_resp.status_code == 403:
-            raise RuntimeError("GitHub API 403（限流，请配置 GITHUB_TOKEN）")
-        if contents_resp.status_code != 200:
-            return []
-        contents = contents_resp.json()
-        stars = repo_resp.json().get("stargazers_count", 0) if repo_resp.status_code == 200 else 0
-    except RuntimeError:
-        raise
-    except Exception:
-        return []
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        contents_resp = await client.get(
+            f"{GITHUB_API}/repos/{ANTHROPIC_REPO}/contents/skills",
+            headers=_gh_token_headers(),
+        )
+        repo_resp = await client.get(
+            f"{GITHUB_API}/repos/{ANTHROPIC_REPO}",
+            headers=_gh_token_headers(),
+        )
+    if contents_resp.status_code == 403:
+        raise RuntimeError("GitHub API 403（限流，请配置 GITHUB_TOKEN）")
+    if contents_resp.status_code != 200:
+        raise RuntimeError(f"GitHub API {contents_resp.status_code}（{ANTHROPIC_REPO}/skills 不可用）")
+    contents = contents_resp.json()
+    stars = repo_resp.json().get("stargazers_count", 0) if repo_resp.status_code == 200 else 0
 
     items: list[dict[str, Any]] = []
     sem = asyncio.Semaphore(8)

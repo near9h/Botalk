@@ -8,8 +8,14 @@ import {
   avatarColor,
   Badge,
   Button,
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
   EmptyState,
+  Label,
   Select,
+  Textarea,
   useToast,
   vendorBadgeVariant,
 } from "@/components/ui";
@@ -17,7 +23,9 @@ import { Sidebar } from "@/components/Sidebar";
 import { ChatBubble, ChatBubbleData } from "@/components/ChatBubble";
 import { Composer } from "@/components/Composer";
 import { GroupWizard } from "@/components/GroupWizard";
-import { api, Attachment, AttachmentMeta, Bot, Group, Message, Run, Task, streamChat, vendorLabel, vendorOfModelId } from "@/lib/api";
+import { CitationDrawerProvider } from "@/components/CitationDrawerContext";
+import { CitationDrawerSurface } from "@/components/SourceCitation";
+import { api, Attachment, AttachmentMeta, Bot, CitedRef, Group, GroupPolicy, Message, Run, Task, User, streamChat, vendorLabel, vendorOfModelId } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 
 export default function GroupPage({ params }: { params: { id: string } }) {
@@ -54,6 +62,15 @@ export default function GroupPage({ params }: { params: { id: string } }) {
   const [activeTaskToken, setActiveTaskToken] = useState<string | null>(null);
   // Title of the currently-active task, for the header subtitle.
   const [activeTaskTitle, setActiveTaskTitle] = useState<string>("");
+  // 平台群规（只读展示用）+ 当前登录用户（判断能否编辑本群群规）。
+  const [policy, setPolicy] = useState<GroupPolicy | null>(null);
+  const [me, setMe] = useState<User | null>(null);
+  // 本群「群通知 / 群规」编辑弹窗。
+  const [noticeOpen, setNoticeOpen] = useState(false);
+  const [noticeDraft, setNoticeDraft] = useState("");
+  const [savingNotice, setSavingNotice] = useState(false);
+  // 顶部平台群规横幅折叠状态（按群记忆，避免每次进群都占屏）。
+  const [bannerOpen, setBannerOpen] = useState(false);
   const abortRef = useRef<(() => void) | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -207,6 +224,66 @@ export default function GroupPage({ params }: { params: { id: string } }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId]);
 
+  // 当前用户（判断本群群规的编辑权限）+ 平台群规（横幅展示）。两者都是
+  // 非关键路径，失败静默即可 —— 不影响聊天主流程。
+  useEffect(() => {
+    let cancelled = false;
+    api.me().then((u) => !cancelled && setMe(u)).catch(() => {});
+    api.getPolicy().then((p) => !cancelled && setPolicy(p)).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 平台群规横幅默认折叠，用户展开后按群记忆。
+  useEffect(() => {
+    try {
+      setBannerOpen(localStorage.getItem(`botgroup.policyBanner.${groupId}`) === "1");
+    } catch {
+      /* localStorage unavailable (private mode) — stay collapsed */
+    }
+  }, [groupId]);
+
+  const toggleBanner = () => {
+    setBannerOpen((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(`botgroup.policyBanner.${groupId}`, next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  };
+
+  /** 本群群规只有 owner / admin 可改。 */
+  const canEditNotice =
+    !!group && (me?.role === "admin" || (!!me && me.id === group.owner_id));
+
+  const openNoticeEditor = () => {
+    setNoticeDraft(group?.notice || "");
+    setNoticeOpen(true);
+  };
+
+  const saveNotice = async () => {
+    setSavingNotice(true);
+    try {
+      await api.updateGroup(groupId, { notice: noticeDraft });
+      await refresh();
+      setNoticeOpen(false);
+      toast.push({ title: t("group.notice.saved"), variant: "success" });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.push({
+        title: t("common.toast.loadFail"),
+        description: msg,
+        variant: "error",
+      });
+    } finally {
+      setSavingNotice(false);
+    }
+  };
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -283,6 +360,13 @@ export default function GroupPage({ params }: { params: { id: string } }) {
             const incomingAtts = Array.isArray(d.attachments)
               ? (d.attachments as AttachmentMeta[])
               : undefined;
+            // Stage 4: KB citation metadata. Forwarded verbatim so the
+            // bubble's inline `[doc: ...]` markers resolve and the
+            // footer chip strip can render. Empty array when no KB
+            // retrieval happened — never undefined.
+            const incomingRefs = Array.isArray(d.cited_refs)
+              ? (d.cited_refs as CitedRef[])
+              : undefined;
             setMessages((prev) =>
               prev.map((m) => {
                 if (m.streaming && m.botId === incomingBotId) {
@@ -291,6 +375,7 @@ export default function GroupPage({ params }: { params: { id: string } }) {
                     content: incomingContent || m.content,
                     streaming: false,
                     attachments: incomingAtts ?? m.attachments,
+                    citedRefs: incomingRefs ?? m.citedRefs,
                   };
                 }
                 return m;
@@ -478,6 +563,7 @@ export default function GroupPage({ params }: { params: { id: string } }) {
   }
 
   return (
+    <CitationDrawerProvider>
     <div style={{ display: "flex", height: "100vh", minHeight: 0, overflow: "hidden" }}>
       <Sidebar />
       <div
@@ -548,6 +634,69 @@ export default function GroupPage({ params }: { params: { id: string } }) {
                 {group.description}
               </div>
             )}
+            {/* 群通知 / 群规：平台群规的群级补充，所有 bot 都会看到。 */}
+            <div
+              style={{
+                marginTop: 12,
+                padding: 10,
+                background: "var(--surface-2)",
+                borderRadius: "var(--radius-sm)",
+                border: "1px solid var(--border)",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: 6,
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "var(--fg-subtle)",
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  📢 {t("group.notice")}
+                </span>
+                {canEditNotice && (
+                  <button
+                    type="button"
+                    onClick={openNoticeEditor}
+                    title={t("group.notice.edit")}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      color: "var(--accent)",
+                      padding: 0,
+                    }}
+                  >
+                    ✎ {group.notice ? t("group.notice.edit") : t("group.notice.add")}
+                  </button>
+                )}
+              </div>
+              {group.notice ? (
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "var(--fg-muted)",
+                    whiteSpace: "pre-wrap",
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {group.notice}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: "var(--fg-subtle)" }}>
+                  {t("group.notice.empty")}
+                </div>
+              )}
+            </div>
             <div style={{ marginTop: 12, display: "flex", gap: 6 }}>
               <Badge variant={group.mode === "auto" ? "auto" : group.mode === "manual" ? "manual" : "round_robin"}>
                 {t(`group.mode.${group.mode}`)}
@@ -800,6 +949,71 @@ export default function GroupPage({ params }: { params: { id: string } }) {
             </div>
           </div>
 
+          {/* 平台群规横幅：可折叠，折叠状态按群记忆。只有配置了规则才显示。 */}
+          {policy?.preview && (
+            <div
+              style={{
+                flexShrink: 0,
+                borderBottom: "1px solid var(--border)",
+                background: "rgba(167, 139, 250, 0.08)",
+                fontSize: 12,
+              }}
+            >
+              <button
+                type="button"
+                onClick={toggleBanner}
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 24px",
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "var(--fg-muted)",
+                  textAlign: "left",
+                }}
+              >
+                <span>🛡 {t("policy.title")}</span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 400,
+                    color: "var(--fg-subtle)",
+                  }}
+                >
+                  {t("policy.rules.count", {
+                    n: policy.rules.filter((r) => r.enabled).length,
+                    m: policy.rules.length,
+                  })}
+                </span>
+                <span style={{ marginLeft: "auto", color: "var(--fg-subtle)" }}>
+                  {bannerOpen ? "▲" : "▼"}
+                </span>
+              </button>
+              {bannerOpen && (
+                <pre
+                  style={{
+                    margin: 0,
+                    padding: "0 24px 12px",
+                    fontSize: 11,
+                    fontFamily: "JetBrains Mono, monospace",
+                    color: "var(--fg-muted)",
+                    whiteSpace: "pre-wrap",
+                    lineHeight: 1.6,
+                    maxHeight: 220,
+                    overflow: "auto",
+                  }}
+                >
+                  {policy.preview}
+                </pre>
+              )}
+            </div>
+          )}
+
           {/* Messages */}
           <div
             style={{
@@ -866,6 +1080,46 @@ export default function GroupPage({ params }: { params: { id: string } }) {
             window.location.href = `/group/${g.public_id}`;
           }}
         />
+
+        {/* 本群群规编辑弹窗（仅 owner / admin）。 */}
+        <Dialog open={noticeOpen} onOpenChange={setNoticeOpen} maxWidth={620}>
+          <DialogContent>
+            <DialogHeader
+              title={t("group.notice.edit")}
+              description={t("group.notice.tip")}
+              onClose={() => setNoticeOpen(false)}
+            />
+            <div style={{ marginTop: 16 }}>
+              <Label htmlFor="group-notice">{t("group.notice")}</Label>
+              <Textarea
+                id="group-notice"
+                rows={8}
+                value={noticeDraft}
+                maxLength={2000}
+                onChange={(e) => setNoticeDraft(e.target.value)}
+                placeholder={t("group.notice.placeholder")}
+              />
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--fg-subtle)",
+                  marginTop: 6,
+                  textAlign: "right",
+                }}
+              >
+                {noticeDraft.length} / 2000
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="secondary" onClick={() => setNoticeOpen(false)}>
+                {t("common.cancel")}
+              </Button>
+              <Button onClick={saveNotice} disabled={savingNotice}>
+                {savingNotice ? t("policy.saving") : t("common.save")}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* History drawer: past sessions in this group, reopenable. */}
         {historyOpen && (
@@ -1098,7 +1352,12 @@ export default function GroupPage({ params }: { params: { id: string } }) {
           </div>
         )}
       </div>
+      {/* Stage 4 fix: a single drawer surface shared by every ChatBubble
+          in the chat. Rendered inside the chat page so the drawer
+          overlays both the sidebar and the conversation panel. */}
+      <CitationDrawerSurface />
     </div>
+    </CitationDrawerProvider>
   );
 }
 

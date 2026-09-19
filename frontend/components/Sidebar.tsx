@@ -23,6 +23,7 @@ import { api, User } from "@/lib/api";
 const NAV_KEYS: Array<{ href: string; key: string; icon: string }> = [
   { href: "/", key: "nav.groups", icon: "💬" },
   { href: "/bots", key: "nav.bots", icon: "🤖" },
+  { href: "/knowledge", key: "nav.knowledge", icon: "📚" },
   { href: "/skills", key: "nav.skills", icon: "🧩" },
   { href: "/models", key: "nav.models", icon: "🧠" },
 ];
@@ -30,6 +31,7 @@ const NAV_KEYS: Array<{ href: string; key: string; icon: string }> = [
 const ADMIN_KEYS: Array<{ href: string; key: string; icon: string }> = [
   { href: "/admin/users", key: "nav.adminUsers", icon: "👥" },
   { href: "/admin/audit", key: "nav.adminAudit", icon: "📜" },
+  { href: "/admin/policies", key: "nav.adminPolicies", icon: "🛡" },
 ];
 
 export function Sidebar() {

@@ -50,6 +50,7 @@ async def _to_out(session: AsyncSession, group: Group) -> GroupOut:
         owner_id=group.owner_id,
         owner_username=owner_username,
         scope=group.scope,
+        notice=group.notice or "",
         created_at=group.created_at,
         bot_ids=[m.bot_id for m in group.members],
     )
@@ -119,6 +120,7 @@ async def create_group(
         max_rounds=payload.max_rounds,
         scope=scope,
         owner_id=user.id if scope == "user" else None,
+        notice=payload.notice or "",
     )
     if payload.bot_ids:
         existing = await session.execute(

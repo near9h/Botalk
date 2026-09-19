@@ -129,6 +129,7 @@ async def save_message(
     bot_id: int | None = None,
     token_usage: int = 0,
     attachments: list | None = None,
+    cited_refs: list | None = None,
 ) -> Message:
     """Persist one chat turn to `messages`.
 
@@ -140,6 +141,10 @@ async def save_message(
 
     We always reduce the input down to public_ids before persisting so
     /api/messages and the SSE payload agree on the URL-safe token.
+
+    `cited_refs` is the RAG citation metadata emitted by `msghub`
+    (Stage 3). Persisted verbatim so the chat history list can re-
+    render citations on page refresh without re-running retrieval.
     """
     normalized: list[str] = []
     for ref in attachments or []:
@@ -155,6 +160,9 @@ async def save_message(
             pid = ref.get("public_id")
             if isinstance(pid, str) and pid:
                 normalized.append(pid)
+    # Defensive shallow copy — the SSE orchestrator hands us the same
+    # list object across turns so we must not let later mutations leak.
+    cited = list(cited_refs) if cited_refs else []
     msg = Message(
         run_id=run_id,
         group_id=group_id,
@@ -163,6 +171,7 @@ async def save_message(
         content=content,
         token_usage=token_usage,
         attachments=normalized,
+        cited_refs=cited,
     )
     session.add(msg)
     # If this is the first user message of a still-untitled task,

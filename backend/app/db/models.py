@@ -69,6 +69,9 @@ class Group(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     scope: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
+    # 群级「群通知 / 群规」追加文本。平台级规则另存 system_policies，
+    # 注入时始终排在 notice 之前，且不可被 notice 覆盖。
+    notice: Mapped[str] = mapped_column(Text, default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -166,6 +169,13 @@ class Message(Base):
     # `public_id` (not the integer id), so we store the strings here
     # to keep /api/messages and the SSE payload shape consistent.
     attachments: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    # Stage 3: KB citation metadata emitted by RAG retrieval. Each entry
+    # mirrors the SSE `cited_refs` payload: {chunk_id, kb_id, kb_doc_id,
+    # filename, page, para, bbox, snippet, score, ragflow_chunk_id,
+    # citation_key}. Empty list when retrieval was skipped or returned
+    # no chunks. Persisted so /api/messages can re-render citations on
+    # page refresh without re-running retrieval.
+    cited_refs: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -325,3 +335,148 @@ class AuditLog(Base):
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="success")
     detail: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+
+# ─────────────────── 知识库 / RAG 路线 (0016) ───────────────────
+
+
+class KnowledgeBase(Base):
+    """A user's curated knowledge base.
+
+    Mirrors a RAGFlow dataset on the engine side. The local row is
+    authoritative for ownership / scope / public flag; `ragflow_dataset_id`
+    is the engine-side handle, lazily populated the first time the KB is
+    pushed to RAGFlow (see `app.services.ragflow_client.create_dataset`).
+    """
+
+    __tablename__ = "knowledge_bases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    owner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+    # `user` = owner-only, `system` = reserved for built-in KBs that
+    # ship with the install.
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="user")
+    # When True, any user can mount this KB on their own bots; the
+    # owner/admin still retains write/mutate rights. Mirrors bots.is_public.
+    is_public: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    ragflow_dataset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+
+class KbDocument(Base):
+    """One ingested source file inside a knowledge base.
+
+    Tracks the RAGFlow ingest lifecycle (`status`: pending → parsing →
+    ready / failed) and stores the engine-side `ragflow_doc_id` we get
+    back from the upload call. The actual text / vectors live inside
+    RAGFlow; this row is only metadata.
+    """
+
+    __tablename__ = "kb_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kb_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    # Mirror of the Attachment row created during upload. UNIQUE so we
+    # never accidentally double-attach the same file to two KB docs.
+    attachment_id: Mapped[int] = mapped_column(
+        ForeignKey("attachments.id", ondelete="CASCADE"),
+        nullable=False, unique=True,
+    )
+    ragflow_doc_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+
+class KbChunk(Base):
+    """Cached chunk metadata returned from RAGFlow after retrieval.
+
+    We deliberately do NOT store vectors or full text bodies — RAGFlow
+    owns those. We only mirror the metadata the chat UI needs to render
+    a "📎 来源：xxx 第3页" chip and jump the PDF.js viewer to the
+    right bbox rectangle.
+    """
+
+    __tablename__ = "kb_chunks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kb_doc_id: Mapped[int] = mapped_column(
+        ForeignKey("kb_documents.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    ragflow_chunk_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # 1-indexed page number. NULL for non-paginated sources (Excel / FAQ).
+    page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Optional paragraph / section number within the page.
+    para: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # [x1, y1, x2, y2] in PDF user-space coords. NULL for non-PDF.
+    bbox_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # First ~200 chars of the chunk for the KB list page preview.
+    snippet: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+
+class BotKb(Base):
+    """Many-to-many: which bots see which knowledge bases.
+
+    Composite PK on (bot_id, kb_id) guarantees idempotent linking — the
+    `mount` API can just `INSERT ... ON CONFLICT DO NOTHING`.
+    """
+
+    __tablename__ = "bot_kb"
+
+    bot_id: Mapped[int] = mapped_column(
+        ForeignKey("bots.id", ondelete="CASCADE"), primary_key=True,
+    )
+    kb_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"), primary_key=True,
+    )
+    # Multiplier applied to retrieval scores from this KB; defaults to 1.0.
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+
+# ─────────────────── 平台群规 / 防火墙规则 (0018) ───────────────────
+
+
+class SystemPolicy(Base):
+    """平台级「群规 / 防火墙规则」底座。
+
+    全表**只有一行**（`id` 恒为 1）。所有群组的所有 bot、所有轮次都会
+    在 system prompt 的最前段注入这里的规则，且任何用户指令、任何群级
+    规则（`Group.notice`）都不得覆盖它。
+
+    `rules` 是 JSON 数组，元素形如
+    `{"id": "r1", "title": "合规底线", "content": "...", "enabled": true}`。
+    管理页整表替换（PUT /api/policies），不做逐条 CRUD。
+    """
+
+    __tablename__ = "system_policies"
+
+    # 恒为 1 —— 单行表，读取时直接 where(id == 1)。
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # 总开关。关闭后已配置的 rules 保留，但不再注入任何群组。
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    rules: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    updated_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

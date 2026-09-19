@@ -17,6 +17,7 @@ import {
   useToast,
 } from "./ui";
 import { api, Bot, Group } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 
 type Mode = Group["mode"];
 
@@ -54,9 +55,11 @@ export function GroupWizard({
 }) {
   const toast = useToast();
   const router = useRouter();
+  const { t } = useI18n();
   const [step, setStep] = useState(0);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [notice, setNotice] = useState("");
   const [mode, setMode] = useState<Mode>("auto");
   const [maxRounds, setMaxRounds] = useState(3);
   const [selectedBots, setSelectedBots] = useState<number[]>([]);
@@ -66,6 +69,7 @@ export function GroupWizard({
     setStep(0);
     setName("");
     setDescription("");
+    setNotice("");
     setMode("auto");
     setMaxRounds(6);
     setSelectedBots([]);
@@ -98,6 +102,7 @@ export function GroupWizard({
         mode,
         max_rounds: maxRounds,
         bot_ids: selectedBots,
+        notice: notice.trim() || undefined,
       });
       toast.push({
         title: "群组已创建",
@@ -226,6 +231,29 @@ export function GroupWizard({
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="这个群组讨论什么主题？"
                 />
+              </div>
+              <div>
+                <Label htmlFor="wiz-notice">
+                  {t("group.notice")}（可选）
+                </Label>
+                <Textarea
+                  id="wiz-notice"
+                  rows={3}
+                  value={notice}
+                  maxLength={2000}
+                  onChange={(e) => setNotice(e.target.value)}
+                  placeholder={t("group.notice.placeholder")}
+                />
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--fg-subtle)",
+                    marginTop: 4,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {t("group.notice.tip")}
+                </div>
               </div>
             </div>
           )}

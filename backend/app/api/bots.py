@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from app.auth import require_user
 from app.config import get_settings
-from app.db.models import Bot, BotSkill, Skill, User
+from app.db.models import Bot, BotKb, BotSkill, KnowledgeBase, Skill, User
 from app.db.session import get_session
 from app.schemas import BotCreate, BotOut, BotSkillOut, BotSkillSet, BotUpdate, SkillOut
 from app.services import audit as audit_service
@@ -27,11 +27,52 @@ router = APIRouter()
 settings = get_settings()
 
 
+# Sentinel for "field absent from payload" — `None` is a valid value
+# (e.g. kb_ids=[] means unmount everything) so we can't reuse `None`.
+_UNSET = object()
+
+
+# ─────────────────────────── helpers ───────────────────────────
+
+
+async def _bot_to_out(bot: Bot, session: AsyncSession) -> BotOut:
+    """Build BotOut and populate kb_ids from the bot_kb join table.
+
+    `kb_ids` is a virtual field — there's no `bot.kb_ids` ORM attribute
+    (the association lives in the bot_kb table). This keeps BotOut
+    ergonomic for the frontend (one round-trip, no extra fetch).
+    """
+    out = BotOut.model_validate(bot)
+    rows = await session.execute(
+        select(BotKb.kb_id).where(BotKb.bot_id == bot.id).order_by(BotKb.kb_id)
+    )
+    out.kb_ids = [r[0] for r in rows.all()]
+    return out
+
+
+async def _resolve_visible_kb(
+    session: AsyncSession, kb_id: int, user: User
+) -> KnowledgeBase:
+    """Visibility for mounting a KB on a bot.
+
+    Mirrors `api.kb._resolve_kb` — admin sees all, scope=system is global,
+    is_public KBs are world-mountable, otherwise owner-only.
+    """
+    kb = await session.get(KnowledgeBase, kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="knowledge base not found")
+    if user.role == "admin" or kb.scope == "system" or kb.is_public:
+        return kb
+    if kb.owner_id == user.id:
+        return kb
+    raise HTTPException(status_code=404, detail="knowledge base not found")
+
+
 @router.get("", response_model=list[BotOut])
 async def list_bots(
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
-) -> list[Bot]:
+) -> list[BotOut]:
     """admin 全集; user 仅看 system + 自己 owner + 别人分享的 (is_public) bot。"""
     if user.role == "admin":
         result = await session.execute(select(Bot).order_by(Bot.id))
@@ -47,7 +88,26 @@ async def list_bots(
             )
             .order_by(Bot.id)
         )
-    return list(result.scalars().all())
+    bots = list(result.scalars().all())
+    if not bots:
+        return []
+    # Pre-load every bot's KB ids in a single round-trip (avoids N+1
+    # queries — `_bot_to_out` would otherwise do one select per bot).
+    bot_ids = [b.id for b in bots]
+    kb_rows = await session.execute(
+        select(BotKb.bot_id, BotKb.kb_id)
+        .where(BotKb.bot_id.in_(bot_ids))
+        .order_by(BotKb.bot_id, BotKb.kb_id)
+    )
+    by_bot: dict[int, list[int]] = {}
+    for bot_id, kb_id in kb_rows.all():
+        by_bot.setdefault(bot_id, []).append(kb_id)
+    out: list[BotOut] = []
+    for b in bots:
+        o = BotOut.model_validate(b)
+        o.kb_ids = by_bot.get(b.id, [])
+        out.append(o)
+    return out
 
 
 class GeneratePersonaRequest(BaseModel):
@@ -184,7 +244,7 @@ async def create_bot(
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
     ctx: audit_service.AuditContext = Depends(audit_service.audit_ctx),
-) -> Bot:
+) -> BotOut:
     # 普通用户：忽略 client 传的 scope，强制 'user' 且 owner=self
     scope = payload.scope if user.role == "admin" else "user"
     if scope != "system":
@@ -211,7 +271,7 @@ async def create_bot(
     )
     await session.commit()
     await session.refresh(bot)
-    return bot
+    return await _bot_to_out(bot, session)
 
 
 @router.get("/{bot_id}", response_model=BotOut)
@@ -219,13 +279,13 @@ async def get_bot(
     bot_id: int,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
-) -> Bot:
+) -> BotOut:
     bot = await session.get(Bot, bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="bot not found")
     if user.role != "admin" and bot.scope != "system" and bot.owner_id != user.id and not bot.is_public:
         raise HTTPException(status_code=404, detail="bot not found")
-    return bot
+    return await _bot_to_out(bot, session)
 
 
 @router.patch("/{bot_id}", response_model=BotOut)
@@ -235,7 +295,7 @@ async def update_bot(
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
     ctx: audit_service.AuditContext = Depends(audit_service.audit_ctx),
-) -> Bot:
+) -> BotOut:
     bot = await session.get(Bot, bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="bot not found")
@@ -273,8 +333,35 @@ async def update_bot(
         raise HTTPException(
             status_code=403, detail="只有创建者才能切换公开/私有"
         )
+    # kb_ids is a virtual field — handled separately against bot_kb table.
+    kb_ids_payload = data.pop("kb_ids", _UNSET)
     for k, v in data.items():
         setattr(bot, k, v)
+
+    kb_diff: dict[str, list[int]] = {}
+    if kb_ids_payload is not _UNSET:
+        # Verify every KB the user wants to mount is visible to them.
+        new_ids: set[int] = set()
+        for kid in kb_ids_payload:
+            await _resolve_visible_kb(session, kid, user)
+            new_ids.add(int(kid))
+        existing_rows = await session.execute(
+            select(BotKb.kb_id).where(BotKb.bot_id == bot.id)
+        )
+        existing_ids = {r[0] for r in existing_rows.all()}
+        to_add = new_ids - existing_ids
+        to_remove = existing_ids - new_ids
+        # Idempotent insert (PK conflict → no-op). Composite (bot_id, kb_id).
+        for kid in to_add:
+            session.add(BotKb(bot_id=bot.id, kb_id=kid))
+        if to_remove:
+            await session.execute(
+                delete(BotKb).where(
+                    BotKb.bot_id == bot.id, BotKb.kb_id.in_(to_remove)
+                )
+            )
+        kb_diff = {"added": sorted(to_add), "removed": sorted(to_remove)}
+
     await audit_service.log(
         session,
         ctx,
@@ -282,11 +369,15 @@ async def update_bot(
         target_type="bot",
         target_id=str(bot.id),
         target_name=bot.name,
-        detail={"changed": list(data.keys()), "is_public": bot.is_public},
+        detail={
+            "changed": list(data.keys()) + (["kb_ids"] if kb_diff else []),
+            "is_public": bot.is_public,
+            "kb_diff": kb_diff or None,
+        },
     )
     await session.commit()
     await session.refresh(bot)
-    return bot
+    return await _bot_to_out(bot, session)
 
 
 @router.delete("/{bot_id}", status_code=status.HTTP_204_NO_CONTENT)

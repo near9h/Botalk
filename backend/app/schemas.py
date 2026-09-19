@@ -32,6 +32,9 @@ class BotUpdate(BaseModel):
     params: dict[str, Any] | None = None
     # 公开分享：owner 可设为 true 把私有 bot 分享给所有用户可见（但只有 owner/admin 能改/删）
     is_public: bool | None = None
+    # 知识库挂载：传一个完整 list 覆盖（idempotent：缺失的 unbind，多出的 bind）。
+    # 留 None 表示不动；传 [] 表示解绑所有。
+    kb_ids: list[int] | None = None
     # is_system / is_protected / scope / owner_id 不可通过 PATCH 改；只能由 admin
     # 通过独立的"提升/降级"接口或 SQL 改。
     # is_system is intentionally NOT updatable here — system identity is
@@ -47,6 +50,8 @@ class BotOut(BotBase):
     owner_id: int | None = None
     scope: str = "user"
     is_public: bool = False
+    # 知识库挂载 id 列表（前端编辑表单直接绑定）
+    kb_ids: list[int] = []
     created_at: datetime
 
 
@@ -61,6 +66,8 @@ class GroupCreate(GroupBase):
     bot_ids: list[int] = Field(default_factory=list)
     # admin 可显式传 scope='system' 创建共享群组；普通用户忽略，强制 'user'
     scope: str | None = Field(default=None, pattern="^(system|user)$")
+    # 群级「群通知 / 群规」追加文本（创建时可选）。
+    notice: str | None = Field(default=None, max_length=2000)
 
 
 class GroupUpdate(BaseModel):
@@ -70,6 +77,8 @@ class GroupUpdate(BaseModel):
     description: str | None = None
     mode: str | None = Field(default=None, pattern="^(round_robin|auto|manual)$")
     max_rounds: int | None = Field(default=None, ge=1, le=50)
+    # 群级「群通知 / 群规」追加文本。仅 owner / admin 可改（沿用既有权限）。
+    notice: str | None = Field(default=None, max_length=2000)
 
 
 class GroupOut(GroupBase):
@@ -83,8 +92,43 @@ class GroupOut(GroupBase):
     # (no single human owner).
     owner_username: str | None = None
     scope: str = "user"
+    # 群级「群通知 / 群规」，空串表示未配置。
+    notice: str = ""
     created_at: datetime
     bot_ids: list[int] = Field(default_factory=list)
+
+
+# ──────────────────── 平台群规 / 防火墙规则 ────────────────────
+
+
+class PolicyRule(BaseModel):
+    """单条平台群规。`id` 缺省时由服务端补一个短随机串。"""
+
+    id: str | None = Field(default=None, max_length=32)
+    title: str = Field(default="", max_length=60)
+    content: str = Field(default="", max_length=800)
+    enabled: bool = True
+
+
+class PolicyUpdate(BaseModel):
+    """PUT /api/policies 请求体 —— 整表替换。"""
+
+    enabled: bool = True
+    rules: list[PolicyRule] = Field(default_factory=list, max_length=50)
+
+
+class PolicyOut(BaseModel):
+    """GET/PUT /api/policies 响应。
+
+    `preview` 是后端用同一套渲染逻辑算出的「平台群规段」文本，
+    管理页直接展示它即可，无需在前端复刻渲染规则。
+    """
+
+    enabled: bool
+    rules: list[PolicyRule] = Field(default_factory=list)
+    preview: str | None = None
+    updated_at: datetime | None = None
+    updated_by_username: str | None = None
 
 
 class MessageOut(BaseModel):
@@ -100,6 +144,12 @@ class MessageOut(BaseModel):
     # UI renders a download button per token; backend serves the bytes
     # from `GET /api/attachments/{public_id}/download`.
     attachments: list[str] = []
+    # Stage 3: KB citation metadata persisted alongside the message so
+    # /api/messages can re-render SourceCitation chips on refresh. Each
+    # entry is a dict with chunk_id / kb_id / kb_doc_id / filename /
+    # page / para / bbox / snippet / score / ragflow_chunk_id /
+    # citation_key. Empty list when the bot had no KB mounted.
+    cited_refs: list[dict] = []
     created_at: datetime
 
 

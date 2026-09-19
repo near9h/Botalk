@@ -13,9 +13,18 @@
  *
  * Bot-produced document attachments use the `attachment://<id>` URL scheme,
  * which is intercepted here and turned into a real download card.
+ *
+ * Stage 4: RAG citation tokens `[doc: filename p.X ¶Y]` are upgraded to
+ * clickable chips that the chat layer dispatches to a PDF.js viewer.
+ * The chip's data-citation-chunk-id attribute is what binds the chip to
+ * the persisted `cited_refs` payload — when the LLM echoes the citation
+ * key inside its answer, the renderer looks the chunk_id up in
+ * `cited_refsByKey` and stamps it onto the chip so the click handler can
+ * fetch the bbox and open the viewer.
  */
 
 import MarkdownIt from "markdown-it";
+import type { CitedRef } from "./api";
 
 export const md = new MarkdownIt({
   html: false,           // never render raw HTML (bot output is untrusted)
@@ -177,10 +186,32 @@ import { Bot } from "./api";
 // up to the boundary at the first delimiter char).
 const MENTION_PATTERN = /@([一-鿿\w][一-鿿\w·\-\d]{0,23})/g;
 
+// Match RAG citation tokens `[doc: filename p.X ¶Y]` (the format the
+// orchestrator injects into the LLM prompt via `[doc: ...]` markers).
+// We are deliberately permissive on the filename (CJK + spaces, since
+// the bot may echo back filenames with parens / dashes / CJK) and on
+// the page / paragraph numbers (`X` and `Y` are digits or `?`). The
+// closing `]` is required so trailing prose doesn't get swallowed.
+const CITATION_PATTERN = /\[doc:\s([^\]]+)\]/g;
+
+// Index `cited_refs` by their pre-formatted `citation_key` so we can
+// resolve `[doc: ...]` markers back to chunk_ids without re-parsing the
+// filename. The backend writes the same key the LLM is told to echo, so
+// this is a stable lookup.
+function buildCitationIndex(refs: CitedRef[] | undefined): Map<string, CitedRef> {
+  const idx = new Map<string, CitedRef>();
+  if (!refs) return idx;
+  for (const r of refs) {
+    if (r && typeof r.citation_key === "string") idx.set(r.citation_key, r);
+  }
+  return idx;
+}
+
 export function renderMessageWithMentions(
   text: string,
   knownBots: Bot[],
   attachments?: AttachmentMeta[],
+  cited_refs?: CitedRef[],
 ): string {
   // Seed attachment cache so link_open can render filename / size on the
   // download card without a separate fetch.
@@ -194,6 +225,9 @@ export function renderMessageWithMentions(
     if (!b.name) continue;
     knownNames.set(b.name.toLowerCase(), b);
   }
+
+  // Citation lookup table — see CITATION_PATTERN above.
+  const citationIndex = buildCitationIndex(cited_refs);
 
   // Strip a leading `[name] ` speaker prefix (added by the orchestrator
   // so other bots can tell voices apart in their prompt). Only at the
@@ -229,10 +263,33 @@ export function renderMessageWithMentions(
     return `@@MENTION_${idx}@@`;
   });
 
+  // Replace `[doc: key]` markers with citation chips. We always emit a
+  // chip (even when the chunk_id isn't in the index) so the LLM can't
+  // dodge citations — unindexed chips become "📎 key" with no click
+  // handler and no bbox overlay, which is the right failure mode (the
+  // user sees something obviously missing rather than silent text).
+  const withCitations = withPlaceholders.replace(CITATION_PATTERN, (full, rawKey) => {
+    const key = String(rawKey).trim();
+    const ref = citationIndex.get(key);
+    const idx = placeholders.length;
+    if (ref) {
+      placeholders.push(
+        `<span class="citation" data-citation-chunk-id="${ref.chunk_id}" data-citation-key="${escapeAttr(key)}" data-citation-kb-id="${ref.kb_id}" data-citation-doc-id="${ref.kb_doc_id}" title="${escapeAttr(ref.snippet || key)}">📎 ${escapeHtml(key)}</span>`,
+      );
+    } else {
+      // Fallback: chip with no chunk_id. ChatBubble's click handler
+      // silently no-ops; the user still sees the citation in-line.
+      placeholders.push(
+        `<span class="citation citation--orphan" data-citation-key="${escapeAttr(key)}" title="${escapeAttr(key)}">📎 ${escapeHtml(key)}</span>`,
+      );
+    }
+    return `@@MENTION_${idx}@@`;
+  });
+
   // Render the rest of the markdown. The placeholders are escaped because
   // they look like text, so they end up rendered as plain text — we'll
   // substitute them back as raw HTML *after* parsing.
-  let html = md.render(withPlaceholders);
+  let html = md.render(withCitations);
 
   // Substitute placeholders back. markdown-it escaped `@@MENTION_N@@` to
   // text content; we need to put raw HTML back in. We do a literal string
@@ -243,6 +300,14 @@ export function renderMessageWithMentions(
   });
 
   return html;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function escapeAttr(s: string): string {

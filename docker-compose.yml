@@ -39,8 +39,27 @@ services:
       AUTH_BOOTSTRAP_USER: ${AUTH_BOOTSTRAP_USER:-admin}
       AUTH_BOOTSTRAP_PASSWORD: ${AUTH_BOOTSTRAP_PASSWORD:-admin}
       AUTH_DISABLED: ${AUTH_DISABLED:-false}
+      # ─── 知识库 / RAG (路线 RAG, RAGFlow) ───────────────────
+      # Leave RAGFLOW_BASE_URL empty to skip RAG entirely (the chat
+      # orchestrator falls back to no-KB mode). To enable, point it at
+      # the side-car defined in infra/docker-compose.ragflow.yml:
+      #   RAGFLOW_BASE_URL=http://ragflow:9380
+      # The two containers share the bridge network only when you
+      # `docker compose -f docker-compose.yml -f
+      #  infra/docker-compose.ragflow.yml up -d` together.
+      RAGFLOW_BASE_URL: ${RAGFLOW_BASE_URL:-}
+      RAGFLOW_API_KEY: ${RAGFLOW_API_KEY:-}
+      ZHIPUAI_API_KEY: ${ZHIPUAI_API_KEY:-}
+      ZHIPUAI_EMBEDDING_MODEL: ${ZHIPUAI_EMBEDDING_MODEL:-embedding-3}
+      ZHIPUAI_RERANK_MODEL: ${ZHIPUAI_RERANK_MODEL:-rerank}
     expose:
       - "8000"   # Only reachable via the nginx reverse proxy.
+    # RAGFlow side-car uses `host.docker.internal` so this container
+    # can talk to it even when started without the -f infra overlay.
+    # Override in .env with `RAGFLOW_BASE_URL=http://ragflow:9380` to
+    # point at a sibling container on the same bridge network.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data/uploads:/data/uploads
     healthcheck:

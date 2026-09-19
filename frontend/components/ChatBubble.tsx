@@ -2,10 +2,13 @@
 
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { Avatar, avatarColor } from "./ui";
-import { Bot } from "@/lib/api";
+import { Bot, CitedRef } from "@/lib/api";
 import { cacheAttachments, renderMessageWithMentions } from "@/lib/markdown";
 import { useI18n } from "@/lib/i18n";
 import { AttachmentPreviewDrawer } from "./AttachmentPreviewDrawer";
+import { CitationDrawer, CitationDrawerSurface } from "./SourceCitation";
+import { useCitationDrawer } from "./CitationDrawerContext";
+import { CitedRefsFooter } from "./CitedRefsFooter";
 
 export type AttachmentMeta = {
   id: number;
@@ -28,6 +31,11 @@ export type ChatBubbleData = {
   // entry. Each entry's body is served by
   // GET /api/attachments/{id}/download.
   attachments?: Array<AttachmentMeta>;
+  // Stage 4: KB citations surfaced alongside this message. When the
+  // markdown renderer sees a `[doc: ...]` marker it looks the key up
+  // in this list and turns it into a clickable chip; the footer
+  // renders one chip per unique chunk for quick scanning.
+  citedRefs?: CitedRef[];
 };
 
 /**
@@ -49,6 +57,12 @@ export function ChatBubble({
 }) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
+  // Stage 4 fix: drawer state lives on the parent chat page, not on
+  // each ChatBubble — a per-bubble `useState` would silently drop the
+  // click when the user opened a chip in bubble A and then clicked a
+  // chip in bubble B (B's local state was `null`). See
+  // `CitationDrawerContext`.
+  const { openCitation } = useCitationDrawer();
 
   // Wire up mention-chip clicks inside the rendered HTML.
   useEffect(() => {
@@ -68,6 +82,27 @@ export function ChatBubble({
     root.addEventListener("click", handler);
     return () => root.removeEventListener("click", handler);
   }, [bubble.id]);
+
+  // Stage 4: citation chip clicks. Look up the chunk_id embedded on
+  // the chip's `data-citation-chunk-id` attribute, find it in
+  // `bubble.citedRefs`, and open the drawer. Orphan chips (no
+  // chunk_id) silently no-op — the user still sees the inline text.
+  useEffect(() => {
+    const root = bodyRef.current;
+    if (!root || !bubble.citedRefs || bubble.citedRefs.length === 0) return;
+    const idxByChunk = new Map<number, CitedRef>();
+    for (const r of bubble.citedRefs) idxByChunk.set(r.chunk_id, r);
+    const handler = (e: Event) => {
+      const target = (e.target as HTMLElement)?.closest(".citation");
+      if (!target) return;
+      const cid = Number(target.getAttribute("data-citation-chunk-id"));
+      if (!Number.isFinite(cid)) return;
+      const ref = idxByChunk.get(cid);
+      if (ref) openCitation(ref);
+    };
+    root.addEventListener("click", handler);
+    return () => root.removeEventListener("click", handler);
+  }, [bubble.id, bubble.citedRefs, openCitation]);
 
   if (bubble.role === "system") {
     return (
@@ -182,11 +217,19 @@ export function ChatBubble({
             wordBreak: "break-word",
           }}
           dangerouslySetInnerHTML={{
-            __html: renderMessageWithMentions(bubble.content, knownBots, attachments),
+            __html: renderMessageWithMentions(
+              bubble.content,
+              knownBots,
+              attachments,
+              bubble.citedRefs,
+            ),
           }}
         />
         {!bubble.streaming && attachments && attachments.length > 0 && (
           <AttachmentCards attachments={attachments} accent={isSummary} />
+        )}
+        {!bubble.streaming && bubble.citedRefs && bubble.citedRefs.length > 0 && (
+          <CitedRefsFooter refs={bubble.citedRefs} onOpen={openCitation} />
         )}
       </div>
     </div>

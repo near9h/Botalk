@@ -23,10 +23,12 @@ from typing import Any
 
 from openai import AsyncOpenAI
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.models import Bot
 from app.orchestrator.bots import client_for
+from app.services import rag_retriever
 from app.skills.resolve import build_system_context, build_tool_schemas, ensure_tools_cached, run_tool_call
 from app.tools.report_schema import PAYLOAD_SCHEMA_DESCRIPTION
 
@@ -95,6 +97,13 @@ class OrchestratorEvent:
     # so the bubble can render the download card inline. Frontend
     # also accepts legacy integer-id lists for backward compat.
     attachments: list[Any] | None = None
+    # Knowledge-base citations surfaced alongside this message. Each
+    # entry is a dict shaped for the frontend SourceCitation chip:
+    #   {chunk_id, kb_id, kb_doc_id, filename, page, para, bbox,
+    #    snippet, score, ragflow_chunk_id}
+    # Empty list when the bot has no KB mounted or retrieval returned
+    # nothing — never None so the SSE consumer can iterate freely.
+    cited_refs: list[dict[str, Any]] | None = None
 
 
 # ─────────────────────── speaker-selection policies ───────────────────────
@@ -260,13 +269,28 @@ async def _generate_agent(
     skills: list[dict[str, Any]] | None = None,
     on_tool_call: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     user_prompt: str | None = None,
-) -> str:
+    kb_session: AsyncSession | None = None,
+    kb_query: str | None = None,
+    policy_block: str | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
     """Generate one bot reply, optionally running enabled skill tools.
 
     When the bot has tool/mcp skills, we run the OpenAI function-calling loop
     until the model stops requesting tool calls. Tool executions are surfaced
     to the caller via `on_tool_call` so the runner can emit `tool_call` SSE
     events, and their results are fed back as `tool` messages.
+
+    When `kb_session` is provided, we also run RAG retrieval over the bot's
+    mounted knowledge bases and inject the top chunks into the system prompt
+    under a `【知识库参考】` heading. The model is told to cite each chunk
+    inline with `[doc: filename p.X ¶Y]` markers. The matching chunks are
+    returned as the second tuple element so the SSE consumer can render
+    SourceCitation chips and open the PDF.js viewer on click.
+
+    `policy_block` is the platform-wide «群规» text (plus this group's
+    `notice`) rendered by `app.services.policy`. When present it is prepended
+    to the system prompt as the very first section so every bot in every
+    round treats it as the highest-priority instruction.
     """
     # Resolve lazy MCP skills (e.g. MCP-Marketplace) into a real tool list
     # before composing the OpenAI request. Safe no-op for non-lazy skills.
@@ -293,7 +317,10 @@ async def _generate_agent(
     roster_text = "\n".join(roster_lines) if roster_lines else "  (无其他成员)"
 
     system_content = (
-        persona
+        # 平台群规永远是 system prompt 的首段，优先级高于 persona 与一切
+        # 用户指令。空规则时 `policy_block` 为 None，此处完全不注入。
+        ((policy_block + "\n\n") if policy_block else "")
+        + persona
         + "\n\n[格式约束] 用 Markdown 排版：1) 标题用 ## 二级、### 三级；2) 多条要点用 - 列表；3) 重点用 **加粗**；4) 代码用 ``` 包裹；5) 单次回复严格控制在 200 字以内，先结论后理由，不寒暄不重复他人。"
         + "\n\n[群成员] 本群当前有如下机器人（只能 @ 这些名字，超出列表的 @ 不会被识别、无效）：\n"
         + roster_text
@@ -386,6 +413,49 @@ async def _generate_agent(
             "```json\n" + PAYLOAD_SCHEMA_DESCRIPTION + "\n```"
         )
 
+    # ── RAG retrieval (Stage 3) ──
+    # Pull chunks from every KB mounted on this bot, optionally rerank
+    # via GLM, and inject the top-N into the system prompt as
+    # `【知识库参考】`. The chunk list is returned alongside the reply so
+    # the SSE consumer can render SourceCitation chips.
+    #
+    # The retrieval step is wrapped in try/except so a broken RAGFlow
+    # never crashes the chat — we just emit the bot's plain reply
+    # without citations.
+    cited_refs: list[dict[str, Any]] = []
+    if kb_session is not None and kb_query:
+        try:
+            retrieval = await rag_retriever.retrieve_for_bot(
+                bot.id, kb_query, kb_session,
+            )
+            if retrieval.context_block:
+                system_content += "\n\n" + retrieval.context_block
+            cited_refs = [
+                {
+                    "chunk_id": c.chunk_id,
+                    "kb_id": c.kb_id,
+                    "kb_doc_id": c.kb_doc_id,
+                    "filename": c.document_name,
+                    "page": c.page,
+                    "para": c.para,
+                    "bbox": c.bbox,
+                    "snippet": c.snippet,
+                    "score": c.score,
+                    "ragflow_chunk_id": c.ragflow_chunk_id,
+                    "citation_key": c.citation_key,
+                }
+                for c in retrieval.chunks
+            ]
+        except Exception as exc:  # noqa: BLE001
+            # Retrieval must NEVER abort a chat. Log and proceed without
+            # KB context — the LLM will answer from its base knowledge
+            # and the user just won't see citations for this turn.
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "KB retrieval failed for bot %s: %s", bot.id, exc,
+            )
+            cited_refs = []
+
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_content}
     ]
@@ -472,7 +542,7 @@ async def _generate_agent(
                     # the caller (runner) will hand it to
                     # generate_document_from_payload which falls back to
                     # legacy single-docx.
-                    return text
+                    return text, cited_refs
                 # Inject a corrective user message and retry.
                 messages.append({"role": "assistant", "content": text})
                 messages.append(
@@ -494,7 +564,7 @@ async def _generate_agent(
             # Success — package the validated JSON as a canonical string
             # so downstream `generate_document_from_payload` can parse
             # it deterministically.
-            return payload.model_dump_json()
+            return payload.model_dump_json(), cited_refs
 
     # ── legacy path (non-structured bots or old-style doc bots) ──
     resp = await client.chat.completions.create(**params)
@@ -530,7 +600,7 @@ async def _generate_agent(
         resp = await client.chat.completions.create(**params)
         msg = resp.choices[0].message
 
-    return _message_text(msg)
+    return _message_text(msg), cited_refs
 
 
 # ─────────────────────────── public runner ───────────────────────────
@@ -546,12 +616,17 @@ async def run_group_discussion(
     attachment_context: str | None = None,
     skills_by_bot: dict[int, list[dict[str, Any]]] | None = None,
     group_id: int | None = None,
+    policy_block: str | None = None,
 ) -> AsyncIterator[OrchestratorEvent]:
     """Drive a group chat discussion round by round and stream events.
 
     `skills_by_bot` maps bot_id → resolved skill dicts (type/manifest/config)
     for that bot's enabled skills. When present, bots get tool-calling and
     knowledge context injected into their prompts.
+
+    `policy_block` is the pre-rendered platform «群规» (+ this group's notice)
+    text from `app.services.policy.build_policy_block`. The caller computes it
+    **once per request** so every bot and every round sees the identical text.
     """
     if not bots:
         yield OrchestratorEvent(type="run_end", error="group has no bots")
@@ -624,15 +699,27 @@ async def run_group_discussion(
                 # Synchronous generation: wait for the entire reply, then
                 # emit one `message_end` with the full text. See the comment
                 # in `_generate_agent` for why we dropped per-token streaming.
-                full = await _generate_agent(
-                    bot,
-                    history,
-                    client,
-                    group_members=bots,
-                    skills=bot_skills or None,
-                    on_tool_call=on_tool_call if bot_skills else None,
-                    user_prompt=user_prompt,
-                )
+                #
+                # Stage 3: open a short-lived session for RAG retrieval.
+                # `_generate_agent` will pull chunks from every KB mounted
+                # on `bot` and emit citation metadata. We don't keep the
+                # session open across the LLM call — RAGFlow + GLM
+                # network calls dominate anyway, and an extra long-lived
+                # session just holds idle connections.
+                from app.db.session import SessionLocal as _SessionLocal
+                async with _SessionLocal() as _kb_session:
+                    full, cited_refs = await _generate_agent(
+                        bot,
+                        history,
+                        client,
+                        group_members=bots,
+                        skills=bot_skills or None,
+                        on_tool_call=on_tool_call if bot_skills else None,
+                        user_prompt=user_prompt,
+                        kb_session=_kb_session,
+                        kb_query=user_prompt,
+                        policy_block=policy_block,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -729,6 +816,9 @@ async def run_group_discussion(
                 round_index=round_index,
                 mentions=new_mentions,
                 attachments=attachments_for_msg or None,
+                # Stage 3: forward KB citation metadata. Empty list when
+                # the bot has no KB mounted or retrieval returned nothing.
+                cited_refs=cited_refs,
             )
 
         if history and any(
@@ -786,6 +876,7 @@ async def run_group_discussion(
                 user_prompt,
                 bot_turns,
                 model=summary_model,
+                policy_block=policy_block,
             )
             history.append({"role": "assistant", "name": "📋 总结", "content": summary})
             yield OrchestratorEvent(
@@ -794,6 +885,11 @@ async def run_group_discussion(
                 bot_name="📋 总结",
                 content=summary,
                 round_index=max_rounds,
+                # The summarizer never goes through the RAG pipeline,
+                # but we send `cited_refs=[]` so the frontend's data
+                # shape is uniform across bot turns and the summary
+                # (no undefined-vs-empty ambiguity).
+                cited_refs=[],
             )
         except asyncio.CancelledError:
             raise
@@ -815,8 +911,14 @@ async def _summarize(
     bot_turns: list[dict[str, str]],
     *,
     model: str,
+    policy_block: str | None = None,
 ) -> str:
-    """Ask the gateway for a structured Markdown summary of the discussion."""
+    """Ask the gateway for a structured Markdown summary of the discussion.
+
+    `policy_block` (when present) is prepended to the summary's own system
+    prompt so the generated 纪要 also obeys the platform «群规» — the summary
+    is user-visible output, so it must not be the one place rules are ignored.
+    """
     transcript_lines: list[str] = []
     for h in bot_turns:
         name = h.get("name", "Bot")
@@ -827,7 +929,8 @@ async def _summarize(
     transcript = "\n\n".join(transcript_lines)
 
     system = (
-        "你是一位资深会议纪要官。请基于下方多角色讨论记录，输出结构化 Markdown 总结。"
+        ((policy_block + "\n\n") if policy_block else "")
+        + "你是一位资深会议纪要官。请基于下方多角色讨论记录，输出结构化 Markdown 总结。"
         "要求："
         "1) 先写一句 TL;DR（结论先行，50 字以内）；"
         "2) 用 ## 共识、## 分歧、## 行动项 三段式（无内容可写'无'）；"

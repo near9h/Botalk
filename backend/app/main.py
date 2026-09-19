@@ -13,9 +13,13 @@ from app.api import auth as auth_api
 from app.api import bots, groups, messages, chat, models, attachments, skills, runs, tasks
 from app.api import users as users_api
 from app.api import audit as audit_api
+from app.api import kb as kb_api
+from app.api import policies as policies_api
 from app.db.session import SessionLocal
 from app.services import audit as audit_service
+from app.services import ragflow_client
 from app.skills.registry import ensure_builtin_skills
+from app.workers import ingest_worker
 
 settings = get_settings()
 log = logging.getLogger("botgroup.audit")
@@ -64,6 +68,17 @@ async def lifespan(app: FastAPI):
             except Exception as exc:  # noqa: BLE001
                 log.warning("startup audit cleanup failed: %s", exc)
 
+    # Ping RAGFlow once at boot so the operator knows the connection
+    # works (or doesn't). Failure is logged but doesn't abort startup —
+    # the chat orchestrator already short-circuits when RAG is down.
+    if ragflow_client.is_configured():
+        try:
+            client = await ragflow_client.get_client()
+            datasets = await client.list_datasets()
+            log.info("RAGFlow reachable: %d existing dataset(s)", len(datasets))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("RAGFlow unreachable at startup: %s", exc)
+
     cleanup_task = asyncio.create_task(_audit_cleanup_loop())
     try:
         yield
@@ -72,6 +87,18 @@ async def lifespan(app: FastAPI):
         try:
             await cleanup_task
         except asyncio.CancelledError:
+            pass
+        # Wait for in-flight KB ingest jobs to finish (or best-effort
+        # abort after a short grace window). Prevents dropping an
+        # upload that already returned 201 to the user.
+        try:
+            await asyncio.wait_for(ingest_worker.wait_all(), timeout=15)
+        except asyncio.TimeoutError:
+            log.warning("KB ingest tasks didn't drain in 15s during shutdown")
+        # Tear down the shared RAGFlow HTTP client.
+        try:
+            await ragflow_client.aclose_client()
+        except Exception:  # noqa: BLE001
             pass
 
 
@@ -108,3 +135,5 @@ app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(models.router, prefix="/api/models", tags=["models"])
 app.include_router(attachments.router, prefix="/api/attachments", tags=["attachments"])
 app.include_router(skills.router, prefix="/api/skills", tags=["skills"])
+app.include_router(kb_api.router, prefix="/api/kb", tags=["knowledge-bases"])
+app.include_router(policies_api.router, prefix="/api/policies", tags=["policies"])
