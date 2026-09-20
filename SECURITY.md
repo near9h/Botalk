@@ -13,7 +13,7 @@ Older tags may receive critical fixes on request; open an issue first.
 
 **Please do not file a public GitHub issue for security bugs.**
 
-Email: `security@botgroup.local` (placeholder — replace before publishing)
+Email: `nearqh@163.com` (placeholder — replace before publishing)
 
 We acknowledge reports within **2 business days** and aim to ship a fix
 within **30 days** for high/critical issues.
