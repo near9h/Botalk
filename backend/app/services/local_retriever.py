@@ -95,9 +95,10 @@ async def embed_chunks_for_doc(
 ) -> int:
     """Compute embeddings for `chunks` and persist them.
 
-    `chunks` is the list returned by `mineru.parse_pdf_with_chunks` /
-    `_read_text`. Each element must expose `.text`; we store both the
-    embedding and the model id on the corresponding `kb_chunks` row.
+    `chunks` is the list returned by `mineru.parse_document_with_chunks`
+    / `ingest_worker._read_text`. Each element must expose `.text`; we
+    store both the embedding and the model id on the corresponding
+    `kb_chunks` row.
 
     Returns the number of chunks actually updated. Skips chunks whose
     text is empty or under 16 chars (those would dilute the index).

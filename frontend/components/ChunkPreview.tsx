@@ -24,8 +24,8 @@
  * backend already stores them in that coordinate space).
  */
 import { useEffect, useState } from "react";
-import type { KbChunk, KbDocument } from "@/lib/api";
-import { api } from "@/lib/api";
+import type { KbChunk } from "@/lib/api";
+import { isPreviewableSource, kbDocumentPreviewUrl } from "@/lib/api";
 import { PdfViewerWithBbox, type PdfHighlight } from "./PdfViewerWithBbox";
 
 export function ChunkPreview({
@@ -158,16 +158,13 @@ export function ChunkPreview({
  *
  * Layout (left | right):
  *   - Left: PdfViewerWithBbox for the document, with a single
- *     bbox highlight at the chunk's page. Fetches the doc row to
- *     resolve `public_id` for the download URL.
+ *     bbox highlight at the chunk's page. The bytes come from the
+ *     backend's unified `/api/kb/{id}/documents/{doc}/preview`, which
+ *     converts Word / PPT / Excel to PDF on the fly, so no extra
+ *     document lookup is needed here.
  *   - Right: chunk metadata header (filename / page / para), the
  *     full chunk text wrapped in a scrollable container, and a
  *     "关闭" button.
- *
- * Why fetch `getKbDocument` lazily: the parent already has the doc
- * public_id for the active selection but the chunk row alone doesn't
- * carry it, and we want this modal to be self-contained so the chunk
- * list could one day be embedded elsewhere.
  */
 function ChunkPreviewModal({
   chunk,
@@ -182,8 +179,6 @@ function ChunkPreviewModal({
   filename: string;
   onClose: () => void;
 }) {
-  const [doc, setDoc] = useState<KbDocument | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const bbox = (chunk.bbox_json as [number, number, number, number] | null) ?? null;
 
   // Esc closes the modal.
@@ -195,32 +190,15 @@ function ChunkPreviewModal({
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const d = await api.getKbDocument(kbId, kbDocId);
-        if (!cancelled) setDoc(d);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [kbId, kbDocId]);
-
-  // PdfViewerWithBbox accepts an `inline=1` query so the browser
-  // renders the bytes inside an <iframe> instead of downloading.
-  const pdfSrc = doc?.public_id
-    ? `/api/attachments/${doc.public_id}/download?inline=1`
-    : null;
+  // 预览源统一走后端的 /preview：PDF 直接回原文件，Word / PPT / Excel
+  // 由服务端转成 PDF（落盘缓存）。所以这里不必再区分格式，直接交给 pdf.js。
+  const pdfSrc = kbDocumentPreviewUrl(kbId, kbDocId);
+  const previewable = isPreviewableSource(filename);
   const highlights: PdfHighlight[] = bbox
     ? [{ page: chunk.page || 1, bbox, label: `p.${chunk.page ?? "?"} ¶${chunk.para ?? "?"}` }]
     : chunk.page
       ? [{ page: chunk.page, bbox: null, label: `p.${chunk.page}` }]
       : [];
-  const isPdf = (doc?.mime_type || "").includes("pdf") || /\.pdf$/i.test(filename);
 
   return (
     <>
@@ -314,7 +292,7 @@ function ChunkPreviewModal({
               position: "relative",
             }}
           >
-            {!doc ? (
+            {!previewable ? (
               <div
                 style={{
                   padding: 24,
@@ -323,48 +301,15 @@ function ChunkPreviewModal({
                   textAlign: "center",
                 }}
               >
-                正在加载文档…
+                暂不支持在线预览该格式（{filename.split(".").pop() || "未知"}）。
               </div>
-            ) : error ? (
-              <div
-                style={{
-                  padding: 24,
-                  fontSize: 13,
-                  color: "#991B1B",
-                  textAlign: "center",
-                }}
-              >
-                加载文档失败：{error}
-              </div>
-            ) : !isPdf ? (
-              <div
-                style={{
-                  padding: 24,
-                  fontSize: 13,
-                  color: "var(--fg-subtle)",
-                  textAlign: "center",
-                }}
-              >
-                当前文件不是 PDF，无法在浏览器内预览。
-              </div>
-            ) : pdfSrc ? (
+            ) : (
               <PdfViewerWithBbox
                 src={pdfSrc}
                 highlights={highlights}
                 title={filename}
                 width={720}
               />
-            ) : (
-              <div
-                style={{
-                  padding: 24,
-                  fontSize: 13,
-                  color: "#991B1B",
-                  textAlign: "center",
-                }}
-              >
-                该文档缺少 public_id，无法在线预览。
-              </div>
             )}
           </div>
 

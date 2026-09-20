@@ -2,15 +2,16 @@
 
 The KB ingest lifecycle:
 
-  1. User uploads a PDF/Word/Excel to `POST /api/kb/{id}/documents`.
+  1. User uploads a PDF / Word / PPT / 纯文本 to `POST /api/kb/{id}/documents`.
      The handler writes an `Attachment` row (status="pending", group
      id NULL because KB docs are not chat attachments), creates a
      `KbDocument` row in `pending` status, then enqueues a job here.
 
   2. The worker:
-       a. Calls MinerU's `parse_pdf_with_chunks` (or word/excel
-          equivalent — Word & Excel fall through to plain text for
-          now) to get (markdown, list[MinedChunk]).
+       a. Parses by format: PDF / Word / PPT go through MinerU
+          (`parse_document_with_chunks`); plain-text formats are decoded
+          directly. Anything else is rejected with a clear error — see
+          `_MINERU_EXTS` / `_TEXT_EXTS`.
        b. Lazily creates the RAGFlow dataset the first time a KB is
           ingested, caches its `dataset_id` on the KB row, and
           uploads the document bytes to RAGFlow.
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -38,10 +40,31 @@ from app.config import get_settings
 from app.db.models import Attachment, KbChunk, KbDocument, KnowledgeBase
 from app.db.session import SessionLocal
 from app.services import local_retriever, ragflow_client
-from app.services.mineru import MinedChunk, parse_pdf_with_chunks
+from app.services.mineru import MinedChunk, parse_document_with_chunks
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# 走 MinerU 解析的格式。它内部的 Precision Extract API 支持
+# PDF / 图片 / Doc(Docx) / Ppt(Pptx)，Office 文件会被转成 PDF 后返回同一套
+# `full.md` + `layout.json`。
+_MINERU_EXTS = {".pdf", ".doc", ".docx", ".ppt", ".pptx"}
+
+# 真正是纯文本、可以直接 UTF-8 解码的格式。
+# 注意 .docx/.pptx/.xlsx 是 ZIP 容器，绝不能走这条路：按文本解码得到的是
+# 二进制乱码，而且里面带 NUL，Postgres 的 text 列会直接拒收。
+# .html/.htm 也不走 MinerU —— HTML 需要 `MinerU-HTML` 模型版本，本服务固定
+# 用 vlm/pipeline，所以按文本读即可。
+_TEXT_EXTS = {".txt", ".md", ".markdown", ".html", ".htm"}
+
+# Postgres 的 text/varchar 列存不下 NUL；其余 C0 控制符（保留 \t\n\r）
+# 一并清掉，避免解析器产出脏字符后再炸一次插入。
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+# 没有 layout 信息时（Office 文件、纯文本）按段落聚合的目标长度。
+# 实测 38KB 的 docx 能出 5700+ 字符 markdown，整篇塞一个 chunk 会被
+# `_store_chunks` 的 4000 字符上限截断，长文档后半部分就静默搜不到了。
+_FALLBACK_CHUNK_CHARS = 800
 
 
 # ─────────────────────────── queue ───────────────────────────
@@ -113,28 +136,40 @@ async def _run(kb_doc_id: int) -> None:
             if not kb:
                 raise RuntimeError("kb row missing")
 
-        # 2. Parse with MinerU. Only PDFs produce bbox-bearing chunks;
-        # other formats fall back to a single synthetic chunk.
+        # 2. 按格式分流解析。Office 文件（doc/docx/ppt/pptx）与 PDF 走同一
+        #    条 MinerU 通路；纯文本直接解码；其余格式明确报错，不要拿二进制
+        #    去猜文本。
+        suffix = Path(att.filename or "").suffix.lower()
         mime = (att.mime_type or "").lower()
         chunks: list[MinedChunk] = []
         md = ""
-        if mime == "application/pdf" or att.filename.lower().endswith(".pdf"):
-            md, chunks = await parse_pdf_with_chunks(att.filename, file_bytes)
+        if suffix in _MINERU_EXTS or mime == "application/pdf":
+            md, chunks = await parse_document_with_chunks(att.filename, file_bytes)
+            # MinerU 对 Office 文件只回 full.md、不回 layout.json，所以
+            # docx/pptx 这里必然拿不到逐块 bbox。直接留着空 chunk 列表的话
+            # 文档会显示 ready 却一条都检索不到 —— 静默失败比报错更难查。
+            if not chunks and md:
+                logger.warning(
+                    "MinerU returned no layout chunks for %s; splitting the "
+                    "markdown instead (no bbox highlights)",
+                    att.filename,
+                )
+                chunks = _markdown_chunks(md)
+        elif suffix in _TEXT_EXTS:
+            md = _read_text(file_bytes)
+            chunks = _markdown_chunks(md) if md else []
         else:
-            # Word/Excel/FAQ: hand the raw bytes to RAGFlow and skip the
-            # bbox path. RAGFlow's DeepDoc parser does a reasonable
-            # job on these without our pre-chunking.
-            md = await _read_text(file_bytes, mime)
-            chunks = [
-                MinedChunk(block_id=0, page=1, text=md[:8000], bbox=[])
-            ] if md else []
+            raise RuntimeError(
+                f"暂不支持解析 {suffix or mime or '未知格式'} 文件："
+                "目前支持 PDF / Word / PPT / 纯文本，请转换格式后重新上传"
+            )
 
         # 3. Local-vector path: persist chunks first (so we know the row
         #    ids), then embed them with GLM. If GLM isn't configured we
         #    still keep the chunks (UI shows them as a static preview);
         #    retrieval will return empty because `local_retriever.is_configured()`
         #    is False.
-        await _store_chunks(kb_doc_id, chunks)
+        stored = await _store_chunks(kb_doc_id, chunks)
         if not local_retriever.is_configured():
             logger.info(
                 "GLM embedding not configured; chunks persisted without vectors for doc %s",
@@ -172,12 +207,12 @@ async def _run(kb_doc_id: int) -> None:
             if kb_doc:
                 kb_doc.status = "ready"
                 kb_doc.error = ""
-                kb_doc.chunk_count = len(chunks)
+                kb_doc.chunk_count = stored
                 await session.commit()
         logger.info(
             "KB ingest done: doc_id=%s chunks=%s",
             kb_doc_id,
-            len(chunks),
+            stored,
         )
 
     except Exception as exc:  # noqa: BLE001
@@ -189,19 +224,62 @@ async def _run(kb_doc_id: int) -> None:
 # ─────────────────────────── helpers ───────────────────────────
 
 
-async def _read_text(file_bytes: bytes, mime: str) -> str:
-    """Best-effort text extraction for non-PDF KB uploads.
+def _read_text(file_bytes: bytes) -> str:
+    """读取纯文本 KB 上传（.txt / .md / .html 等）。
 
-    Word / Excel binaries are opaque without specialized parsers; we
-    hand them to RAGFlow which has DeepDoc for the heavy lifting. For
-    our local preview we just decode UTF-8 — anything that's neither
-    UTF-8 text nor a PDF goes to RAGFlow only and `kb_chunks` ends up
-    with a single "see RAGFlow" placeholder.
+    只对真正是文本的格式调用 —— Office 文件是 ZIP 容器，走 `_MINERU_EXTS`
+    那条路，绝不能在这里按 UTF-8 解码。
+
+    解码出来如果是二进制（例如把 .docx 改名成 .txt 上传），内容会带 NUL。
+    这种情况宁可当作空文档，也不要把乱码塞进 kb_chunks 污染检索。
     """
-    try:
-        return file_bytes.decode("utf-8", errors="replace")
-    except Exception:  # noqa: BLE001
+    text = file_bytes.decode("utf-8", errors="replace")
+    if "\x00" in text:
+        logger.warning("KB text upload decoded to binary content; skipping")
         return ""
+    return text
+
+
+def _clean_text(s: str) -> str:
+    """清掉 Postgres 的 text/varchar 存不下的控制字符。
+
+    `\\x00` 是合法 UTF-8 码点，`decode(errors="replace")` 不会剔除它，但
+    Postgres 会报 `invalid byte sequence for encoding "UTF8": 0x00`。入库是
+    所有 chunk 文本的唯一收口，在这里兜底，保证任何解析器的输出都不会把
+    插入语句炸掉。
+    """
+    return _CONTROL_CHARS_RE.sub("", s or "")
+
+
+def _markdown_chunks(md: str) -> list[MinedChunk]:
+    """把没有 layout 信息的 markdown 切成可检索的 chunk。
+
+    用于 Office 文件（MinerU 只给 full.md）和纯文本。按空行分段、再聚合到
+    `_FALLBACK_CHUNK_CHARS` 左右，避免整篇被 4000 字符上限截断。这些 chunk
+    没有 bbox，所以前端不会画高亮，只显示命中片段。
+
+    `block_id` 复用成段序：`_store_chunks` 会把它写进 `kb_chunks.para`，
+    于是引用角标能显示出「第几段」。
+    """
+    pieces: list[str] = []
+    buf = ""
+    for para in md.split("\n\n"):
+        para = para.strip()
+        if not para:
+            continue
+        if not buf:
+            buf = para
+        elif len(buf) + len(para) + 2 > _FALLBACK_CHUNK_CHARS:
+            pieces.append(buf)
+            buf = para
+        else:
+            buf = f"{buf}\n\n{para}"
+    if buf:
+        pieces.append(buf)
+    return [
+        MinedChunk(block_id=i, page=1, text=p, bbox=[])
+        for i, p in enumerate(pieces)
+    ]
 
 
 async def _ensure_ragflow_dataset(
@@ -270,8 +348,10 @@ async def _upload_to_ragflow(
         await session.commit()
 
 
-async def _store_chunks(kb_doc_id: int, chunks: list[MinedChunk]) -> None:
-    """Replace the chunk list for a KB doc.
+async def _store_chunks(kb_doc_id: int, chunks: list[MinedChunk]) -> int:
+    """Replace the chunk list for a KB doc. Returns the number of rows
+    actually written (chunks whose text is empty after cleaning are
+    dropped).
 
     We drop existing rows first because the file might be re-uploaded
     (idempotent re-ingest). The FK cascade from `kb_documents` already
@@ -298,7 +378,9 @@ async def _store_chunks(kb_doc_id: int, chunks: list[MinedChunk]) -> None:
         # `local_retriever.embed_chunks_for_doc` 用带 `::vector` 的裸 SQL 回填。
         rows: list[dict[str, Any]] = []
         for c in chunks:
-            text = (c.text or "").strip()[:4000]
+            text = _clean_text(c.text).strip()[:4000]
+            if not text:
+                continue
             rows.append(
                 {
                     "kb_doc_id": kb_doc_id,
@@ -313,6 +395,7 @@ async def _store_chunks(kb_doc_id: int, chunks: list[MinedChunk]) -> None:
         if rows:
             await session.execute(insert(KbChunk), rows)
         await session.commit()
+        return len(rows)
 
 
 async def _set_status(kb_doc_id: int, status: str, *, error: str = "") -> None:

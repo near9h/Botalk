@@ -28,7 +28,7 @@
  */
 import { useEffect, useState } from "react";
 import type { CitedRef } from "@/lib/api";
-import { api } from "@/lib/api";
+import { isPreviewableSource, kbDocumentPreviewUrl } from "@/lib/api";
 import { PdfViewerWithBbox, type PdfHighlight } from "./PdfViewerWithBbox";
 
 export type CitationChipProps = {
@@ -137,7 +137,6 @@ export function CitationPreviewModal({
 }) {
   const [pdfSrc, setPdfSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
 
   // Esc closes it. Only bind while open so other Esc handlers (modal
   // dialogs elsewhere on the page) keep working when the modal is
@@ -155,57 +154,20 @@ export function CitationPreviewModal({
     if (!citedRef) {
       setPdfSrc(null);
       setError(null);
-      setLoading(false);
       return;
     }
-    let cancelled = false;
+    // 预览统一走后端的 /preview：PDF 直接回原文件，Word / PPT / Excel
+    // 由服务端用 LibreOffice 转成 PDF（结果落盘缓存）。所以这里不再需要
+    // 先查 doc 拿 public_id、也不用判断 mime。
+    if (!isPreviewableSource(citedRef.filename)) {
+      setPdfSrc(null);
+      setError(
+        `暂不支持在线预览 ${citedRef.filename}（仅 PDF / Word / PPT / Excel 可预览）`,
+      );
+      return;
+    }
     setError(null);
-    setPdfSrc(null);
-    setLoading(true);
-    (async () => {
-      try {
-        // Fetch the chunk row so we have the bbox (the SSE payload
-        // already carries bbox, but we re-fetch to honor any post-
-        // retrieval chunk updates — and to be robust against partial
-        // payloads).
-        const chunk = await api.getKbChunk(citedRef.kb_id, citedRef.chunk_id);
-        if (cancelled) return;
-        // The chunk row alone doesn't carry the attachment's public_id;
-        // we need to round-trip through the document endpoint to get a
-        // downloadable URL.
-        const doc = await api.getKbDocument(citedRef.kb_id, citedRef.kb_doc_id);
-        if (cancelled) return;
-        // Reuse the same path the regular chat uses — KB attachments
-        // are served through /api/attachments/{public_id}/download.
-        // We *must* use the wire-facing public_id (unguessable token),
-        // not the integer pk.
-        if (!doc.public_id) {
-          setError(`该文档缺少 public_id，无法在线预览`);
-        } else if (
-          doc.mime_type?.includes("pdf") ||
-          /\.pdf$/i.test(doc.filename)
-        ) {
-          setPdfSrc(`/api/attachments/${doc.public_id}/download`);
-        } else {
-          setError(
-            `暂不支持在线预览 ${doc.filename || "此文件"}（仅 PDF 可在浏览器内打开）`,
-          );
-        }
-        // Touch `chunk` so eslint doesn't flag the unused var — the
-        // fetch itself is the side effect we want (refreshes bbox).
-        void chunk;
-      } catch (e) {
-        if (!cancelled) {
-          const msg = e instanceof Error ? e.message : String(e);
-          setError(msg);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    setPdfSrc(kbDocumentPreviewUrl(citedRef.kb_id, citedRef.kb_doc_id));
   }, [citedRef]);
 
   if (!citedRef) return null;
@@ -310,12 +272,6 @@ export function CitationPreviewModal({
             }}
           >
             {citedRef.snippet}
-          </div>
-        )}
-
-        {loading && (
-          <div style={{ fontSize: 12, color: "var(--fg-subtle)" }}>
-            正在加载原文…
           </div>
         )}
 

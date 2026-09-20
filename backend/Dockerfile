@@ -21,6 +21,10 @@ WORKDIR /app
 # 使用阿里云 Debian 镜像源加速 apt 下载（默认 archive.ubuntu.com
 # 在国内极慢）；同时为新的 trixie sources.list.d 形式与旧
 # /etc/apt/sources.list 形式都做替换。
+# LibreOffice（headless）用于把 Word / PPT / Excel 转成 PDF，让 KB 里
+# 非 PDF 的源文件也能在浏览器里预览 —— MinerU 只回解析产物（md/json），
+# 不提供它内部转换出的 PDF，所以这一步只能自己做。
+# `fonts-noto-cjk` 是必需的：不装的话中文会整篇渲染成方框（tofu）。
 RUN sed -i \
         -e 's|deb.debian.org|mirrors.aliyun.com|g' \
         -e 's|security.debian.org|mirrors.aliyun.com|g' \
@@ -31,6 +35,8 @@ RUN sed -i \
         /etc/apt/sources.list 2>/dev/null || true; \
     apt-get update && apt-get install -y --no-install-recommends \
     build-essential libpq-dev curl \
+    libreoffice-writer libreoffice-impress libreoffice-calc \
+    fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./

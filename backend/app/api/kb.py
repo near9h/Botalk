@@ -10,6 +10,7 @@ Surface area:
   GET    /api/kb/{kb_id}/documents            list documents in a KB
   POST   /api/kb/{kb_id}/documents            upload + enqueue ingest
   GET    /api/kb/{kb_id}/documents/{doc_id}   single doc + status + chunks
+  GET    /api/kb/{kb_id}/documents/{doc_id}/preview  内联预览用 PDF
   DELETE /api/kb/{kb_id}/documents/{doc_id}   drop doc (also drops chunks)
 
   GET    /api/kb/{kb_id}/chunks/{chunk_id}     bbox + snippet (used by
@@ -39,6 +40,7 @@ from fastapi import (
     Query,
     UploadFile,
 )
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +50,7 @@ from app.config import get_settings
 from app.db.models import Attachment, KbChunk, KbDocument, KnowledgeBase, User
 from app.db.session import get_session
 from app.services import audit as audit_service
+from app.services import office_pdf
 from app.services import ragflow_client
 from app.workers import ingest_worker
 
@@ -342,7 +345,12 @@ async def upload_kb_document(
     user: User = Depends(require_user),
     ctx: audit_service.AuditContext = Depends(audit_service.audit_ctx),
 ) -> KbDocumentOut:
-    """Upload a PDF/Word/Excel/FAQ to a KB and enqueue ingestion."""
+    """Upload a PDF/Word/Excel/FAQ to a KB and enqueue ingestion.
+
+    非 PDF 的 Office 文件（doc/docx/ppt/pptx/xls/xlsx）会先由 LibreOffice 转成
+    PDF 再存为文档 —— 这样 MinerU 能给出真正的分页和逐块 bbox（引用可高亮），
+    浏览器也能直接预览。转换失败会直接返回 422，不会落一条不可预览的记录。
+    """
     kb = await _resolve_kb(session, kb_id, user)
     if not _can_modify(kb, user):
         raise HTTPException(status_code=403, detail="无权修改该知识库")
@@ -386,17 +394,41 @@ async def upload_kb_document(
     finally:
         await file.close()
 
+    # 非 PDF 的 Office 文件在入库前先转成 PDF，之后整条链路只认 PDF：
+    #   - MinerU 拿到 PDF 才会回真正的分页 + 逐块 bbox，引用才能高亮；
+    #   - 浏览器可以直接预览，不用再依赖运行时转换；
+    #   - chunk 的 page / para 才有意义。
+    # 转换失败就直接返回错误，不做「先存原文件、回头再补」——那样文档会处于
+    # 一个既不能预览、解析质量又差的中间态。
+    stored_path = dest
+    stored_name = file.filename or "upload"
+    stored_bytes = written
+    if office_pdf.needs_pdf_rendition(stored_name):
+        pdf_path = dest.with_suffix(".pdf")
+        try:
+            await office_pdf.convert_to_pdf(dest, pdf_path)
+        except RuntimeError as exc:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # 转换成功后原文件就没有用了（PDF 已经承载了全部内容），
+        # 留着只会占盘并让 KB 里出现同名的两份文档。
+        dest.unlink(missing_ok=True)
+        stored_path = pdf_path
+        stored_name = f"{Path(stored_name).stem}.pdf"
+        stored_bytes = pdf_path.stat().st_size
+        mime = "application/pdf"
+
     # KB documents are detached from any chat group — group_id stays
     # NULL so the public upload port and chat attachments list don't
     # surface them.
     att = Attachment(
         group_id=None,
-        filename=file.filename or "upload",
+        filename=stored_name,
         mime_type=mime,
-        size_bytes=written,
+        size_bytes=stored_bytes,
         status="pending",
         content_md="",
-        storage_path=str(dest),
+        storage_path=str(stored_path),
     )
     session.add(att)
     await session.flush()  # populate att.id
@@ -407,12 +439,18 @@ async def upload_kb_document(
     )
     session.add(kb_doc)
     await audit_service.log(
-        session, ctx,
+        session,
+        ctx,
         action="kb.doc.upload",
         target_type="kb_document",
         target_id=str(kb_doc.id),
-        target_name=file.filename or "upload",
-        detail={"kb_id": kb.id, "size_bytes": written},
+        target_name=stored_name,
+        detail={
+            "kb_id": kb.id,
+            "size_bytes": stored_bytes,
+            # 保留原始后缀，方便日后排查「这份 PDF 是从什么转来的」。
+            "source_suffix": suffix,
+        },
     )
     await session.commit()
     await session.refresh(kb_doc)
@@ -447,6 +485,58 @@ async def get_kb_document(
         raise HTTPException(status_code=404, detail="document not found")
     d, a = row
     return KbDocumentOut.from_row(d, a)
+
+
+@router.get(
+    "/{kb_id}/documents/{doc_id}/preview",
+    response_class=FileResponse,
+)
+async def get_kb_document_preview(
+    kb_id: str,
+    doc_id: int,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(require_user),
+):
+    """把 KB 文档当作可在浏览器内联打开的 PDF 返回。
+
+    - 源文件本来就是 PDF → 直接回原文件；
+    - Word / PPT / Excel → 由 LibreOffice 转成 PDF 再回（结果落盘缓存，
+      后续请求直接命中，见 `services.office_pdf`）；
+    - 其它格式 → 415，前端据此提示「暂不支持在线预览」。
+
+    之所以统一成一个入口：前端不需要再各自判断 mime / public_id，
+    pdf.js 永远拿到 PDF 字节。
+    """
+    kb = await _resolve_kb(session, kb_id, user)
+    row = (
+        await session.execute(
+            select(KbDocument, Attachment)
+            .join(Attachment, Attachment.id == KbDocument.attachment_id)
+            .where(KbDocument.id == doc_id, KbDocument.kb_id == kb.id)
+        )
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="document not found")
+    _d, a = row
+    src = Path(a.storage_path or "")
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="源文件已丢失")
+
+    suffix = Path(a.filename or "").suffix.lower()
+    if suffix == ".pdf" or (a.mime_type or "").lower() == "application/pdf":
+        return FileResponse(src, media_type="application/pdf")
+
+    if not office_pdf.needs_pdf_rendition(a.filename or ""):
+        raise HTTPException(
+            status_code=415,
+            detail=f"暂不支持在线预览 {a.filename}（仅 PDF / Word / PPT / Excel 可预览）",
+        )
+
+    try:
+        pdf = await office_pdf.ensure_pdf(src, str(a.id))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return FileResponse(pdf, media_type="application/pdf")
 
 
 @router.delete(
@@ -485,6 +575,8 @@ async def delete_kb_document(
             logger.warning("RAGFlow doc delete failed for %s", d.ragflow_doc_id)
     await session.delete(d)  # cascades to kb_chunks
     await session.delete(a)
+    # 顺手清掉 LibreOffice 派生的预览 PDF，否则会一直占盘。
+    office_pdf.drop_cache(Path(a.storage_path or ""), str(a.id))
     await audit_service.log(
         session, ctx,
         action="kb.doc.delete",

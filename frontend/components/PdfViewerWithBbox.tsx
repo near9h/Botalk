@@ -72,6 +72,9 @@ export function PdfViewerWithBbox({
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [numPages, setNumPages] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
+  // 文档还没就绪时给个提示。KB 里 Word/PPT 的预览要等服务端 LibreOffice
+  // 转换完才开始下载，那几秒里什么都不显示会让人以为卡住了。
+  const [loading, setLoading] = useState<boolean>(true);
   // Canvas pixel size + the scale used to render it. `bbox` arrives in
   // PDF user-space (scale = 1), so the overlay MUST multiply by this
   // scale before placing rectangles, otherwise the highlight drifts
@@ -127,6 +130,7 @@ export function PdfViewerWithBbox({
         if (cancelled) return;
         setPdf(doc as unknown as PdfDoc);
         setNumPages(doc.numPages);
+        setLoading(false);
         if (highlights.length > 0 && highlights[0].page) {
           setPageNumber(Math.max(1, Math.min(highlights[0].page, doc.numPages)));
         }
@@ -134,6 +138,7 @@ export function PdfViewerWithBbox({
         if (!cancelled) {
           const msg = e instanceof Error ? e.message : String(e);
           setError(msg || "PDF 加载失败");
+          setLoading(false);
         }
       }
     })();
@@ -243,6 +248,17 @@ export function PdfViewerWithBbox({
           }}
         >
           {error}
+        </div>
+      ) : loading ? (
+        <div
+          style={{
+            padding: 24,
+            fontSize: 13,
+            color: "var(--fg-subtle)",
+            textAlign: "center",
+          }}
+        >
+          正在加载原文…
         </div>
       ) : (
         <>

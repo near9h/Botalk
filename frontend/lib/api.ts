@@ -204,6 +204,36 @@ export type KbChunk = {
   snippet: string;
 };
 
+/**
+ * KB 文档的在线预览地址。
+ *
+ * 统一走这一个入口：源文件是 PDF 就直接回原文件，是 Word / PPT / Excel
+ * 则由后端用 LibreOffice 转成 PDF（结果落盘缓存）再回。所以预览端永远
+ * 拿到 PDF 字节，前端不需要再判断 mime / public_id。
+ */
+export function kbDocumentPreviewUrl(kbId: string, docId: number): string {
+  return `/api/kb/${kbId}/documents/${docId}/preview`;
+}
+
+/**
+ * 该源文件是否可能被预览（PDF，或后端能转成 PDF 的 Office 格式）。
+ * 用来决定是渲染 PDF 阅读器还是显示「暂不支持在线预览」。
+ * 与后端 `services/office_pdf.CONVERTIBLE_EXTS` 保持一致。
+ */
+const PREVIEWABLE_EXTS = new Set([
+  "pdf",
+  "doc",
+  "docx",
+  "ppt",
+  "pptx",
+  "xls",
+  "xlsx",
+]);
+export function isPreviewableSource(filename: string | null | undefined): boolean {
+  const ext = (filename ?? "").toLowerCase().split(".").pop() || "";
+  return PREVIEWABLE_EXTS.has(ext);
+}
+
 export type ModelTestResult = {
   ok: boolean;
   model: string;

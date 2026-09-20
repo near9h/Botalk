@@ -1,11 +1,17 @@
-"""MinerU PDF parser integration.
+"""MinerU document parser integration.
 
 Flow (batch-mode, server-side upload):
   1. POST /api/v4/file-urls/batch  → {batch_id, file_urls[]}
-  2. PUT  file_urls[0]  (the PDF bytes)
+  2. PUT  file_urls[0]  (the file bytes)
   3. GET  /api/v4/extract-results/batch/{batch_id}  → polls until
      per-file state is `done` or `failed`. Each entry has `full_zip_url`.
   4. Download the zip, unzip, read `full.md`.
+
+Supported inputs on the Precision Extract API we call: PDF, images,
+Doc/Docx and Ppt/Pptx. Office files are converted to PDF internally by
+MinerU, so they come back through the very same `full.md` + `layout.json`
+artifact pair. HTML needs the dedicated `MinerU-HTML` model version, so
+it is deliberately NOT routed here (see `ingest_worker._TEXT_EXTS`).
 
 For the KB ingest pipeline we also read `layout.json` from the same
 zip — MinerU emits one block per page with `bbox` (x1, y1, x2, y2,
@@ -182,7 +188,7 @@ async def parse_pdf(
         return await _download_markdown(client, zip_url)
 
 
-async def parse_pdf_with_chunks(
+async def parse_document_with_chunks(
     filename: str,
     content: bytes,
     *,
@@ -190,6 +196,10 @@ async def parse_pdf_with_chunks(
     min_text_len: int = 16,
 ) -> tuple[str, list[MinedChunk]]:
     """Bytes in, (markdown, chunks_with_bbox) out.
+
+    Works for every format MinerU's Precision Extract API accepts — PDF,
+    images, Doc/Docx, Ppt/Pptx. Office files are converted internally, so
+    the caller treats them identically.
 
     The zip MinerU returns contains both `full.md` (the markdown body
     used for context) and `layout.json` (a per-page tree of blocks with
