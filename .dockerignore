@@ -1,0 +1,61 @@
+# ── Secrets / config ───────────────────────────────
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+
+# ── Build context junk ─────────────────────────────
+.git/
+.gitignore
+.github/
+.trae/
+data/
+postgres-data/
+*.log
+*.pid
+*.sock
+*.pid.lock
+
+# ── Node / Next ────────────────────────────────────
+node_modules/
+.next/
+.turbo/
+out/
+dist/
+*.tsbuildinfo
+.npm/
+.pnpm-store/
+
+# ── Python ─────────────────────────────────────────
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+
+# ── Test / docs ────────────────────────────────────
+tests/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+*.lcov
+docs/_build/
+
+# ── Editor / OS ────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ── Docker / Compose ──────────────────────────────
+docker-compose*.yml
+Dockerfile*
+.dockerignore

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security issues
+    url: ../SECURITY.md
+    about: Report security vulnerabilities privately — do NOT open a public issue.
+  - name: Discussions
+    url: https://github.com/<your-org>/botgroup/discussions
+    about: General questions and ideas (placeholder link — replace before publishing)

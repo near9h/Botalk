@@ -386,9 +386,9 @@ class Group(Base):
    # admin list users
    curl -b /tmp/c.txt localhost:8000/api/users
    # admin create user
-   curl -b /tmp/c.txt -X POST localhost:8000/api/users -d '{"username":"alice","password":"alice12345","role":"user"}' -H "content-type: application/json"
+   curl -b /tmp/c.txt -X POST localhost:8000/api/users -d '{"username":"alice","password":"<example_password>","role":"user"}' -H "content-type: application/json"
    # user login
-   curl -c /tmp/u.txt -X POST localhost:8000/api/auth/login -d '{"username":"alice","password":"alice12345"}' -H "content-type: application/json"
+   curl -c /tmp/u.txt -X POST localhost:8000/api/auth/login -d '{"username":"alice","password":"<example_password>"}' -H "content-type: application/json"
    # user cannot list users (403)
    curl -b /tmp/u.txt localhost:8000/api/users -o /dev/null -w "%{http_code}\n"   # 期望 403
    # user can list bots (只看到 system + 自己)
@@ -398,8 +398,8 @@ class Group(Base):
    # user create group
    curl -b /tmp/u.txt -X POST localhost:8000/api/groups -d '{"name":"alice-private","bot_ids":[]}' -H "content-type: application/json"
    # admin 创建 bob 并登录
-   curl -b /tmp/c.txt -X POST localhost:8000/api/users -d '{"username":"bob","password":"bob12345","role":"user"}' -H "content-type: application/json"
-   curl -c /tmp/b.txt -X POST localhost:8000/api/auth/login -d '{"username":"bob","password":"bob12345"}' -H "content-type: application/json"
+   curl -b /tmp/c.txt -X POST localhost:8000/api/users -d '{"username":"bob","password":"<example_password>","role":"user"}' -H "content-type: application/json"
+   curl -c /tmp/b.txt -X POST localhost:8000/api/auth/login -d '{"username":"bob","password":"<example_password>"}' -H "content-type: application/json"
    # bob 看不到 alice 的群组 (404)
    curl -b /tmp/b.txt localhost:8000/api/groups/2 -o /dev/null -w "%{http_code}\n"   # 期望 404
    # admin 看得到 alice 的群组 (200)

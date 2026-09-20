@@ -18,10 +18,13 @@ flowchart LR
 ## 1. 前置
 
 ```bash
-HOST=https://36.151.149.30:3500
+# 把 <your-host> 换成你的实际部署地址
+HOST=https://<your-host>:3500
 COOKIE=/tmp/botgroup.cookies
 rm -f $COOKIE
 ```
+
+> 占位符：`<your-host>` 是部署机域名或 IP；`admin` 密码用 `.env` 中 `AUTH_BOOTSTRAP_PASSWORD` 设的值。
 
 ## 2. 步骤
 
@@ -30,7 +33,7 @@ rm -f $COOKIE
 ```bash
 curl -fsS -c $COOKIE -X POST $HOST/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"msi-china123"}' >/dev/null
+  -d '{"username":"admin","password":"<your-bootstrap-password>"}' >/dev/null
 # expect 200
 ```
 

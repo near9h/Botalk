@@ -8,7 +8,7 @@
 
 | 资产 | 位置 | 备注 |
 | --- | --- | --- |
-| 公网入口 | `https://36.151.149.30:3500` | Nginx stream-routing (HTTP+HTTPS 同端口) |
+| 公网入口 | `https://<your-host>:3500` | Nginx stream-routing (HTTP+HTTPS 同端口) |
 | Docker Compose | [`docker-compose.yml`](../../../docker-compose.yml) | 单机一键 |
 | 容器清单 | `backend / frontend / nginx / postgres / new-api` | |
 | 数据库 | `botgroup-postgres` (pgvector/pg16) | |

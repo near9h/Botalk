@@ -8,7 +8,7 @@
 § 8 端到端时序（一句话聊天）
 ──────────────────────────────────────────────────────────
 
-[Browser]  用户在 group 输入"分析新加坡核保手册对高血压客户的核保结论"
+[Browser]  用户在 group 输入"分析这份文档里的关键条款"
    │  EventSource('/api/chat/stream?prompt=...')
    ▼
 [Nginx]    终结 TLS，反代到 backend:8000，带 client_ip

@@ -25,7 +25,7 @@ jobs:
   # ───────────────────── 1. backend: smoke + ruff + bandit + pip-audit ─────────────────────
   backend:
     name: backend · lint + bandit + deps
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16-alpine
@@ -118,7 +118,7 @@ jobs:
   # ───────────────────── 2. frontend: type-check + build + npm audit ─────────────────────
   frontend:
     name: frontend · type-check + build + audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend
@@ -153,7 +153,7 @@ jobs:
   # ───────────────────── 3. docker: build + image scan ─────────────────────
   docker:
     name: docker · build + trivy scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [backend, frontend]
     strategy:
       fail-fast: false
@@ -197,7 +197,7 @@ jobs:
   # ───────────────────── 4. secret scan (cheap, fast) ─────────────────────
   secrets:
     name: gitleaks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:

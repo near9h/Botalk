@@ -14,12 +14,16 @@
 
 ## 一键启动
 
-`.env` 已预填示例 NewAPI（`http://36.151.149.30:5000/v1`，Key 已配置），可直接 `docker compose up -d --build` 试用；正式上线请换成你自己的 NewAPI。
+`.env.example` 是模板；复制成 `.env` 后填你自己的 NewAPI URL + Key，再 `docker compose up -d --build` 试用：
 
 ```bash
-# 首次启动（或改了 .env / Dockerfile / package.json 都要 --build）
+cp .env.example .env
+# 编辑 .env：把 NEWAPI_BASE_URL / NEWAPI_API_KEY / AUTH_BOOTSTRAP_PASSWORD 等占位符替换成你的真实值
 docker compose up -d --build
+docker compose logs -f backend   # 确认 alembic upgrade head 完成
+```
 
+```bash
 # 看启动日志（确认 backend 完成 alembic 迁移、frontend 完成 Next.js 构建）
 docker compose logs -f backend
 docker compose logs -f frontend
