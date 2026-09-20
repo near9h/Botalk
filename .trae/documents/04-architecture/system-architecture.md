@@ -5,55 +5,64 @@
 
 ---
 
-## 1. 一图概览
+## 1. 一图概览（Mermaid）
 
+```mermaid
+flowchart TB
+    %% ──────── 公网 ────────
+    Browser["公网用户浏览器<br/>Next.js SPA + EventSource"]
+
+    %% ──────── Nginx ────────
+    subgraph NGINX["Nginx (botgroup-nginx)"]
+        direction TB
+        NStream["stream :3500<br/>嗅探 0x16 → TLS 终结"]
+        NHttp["http :3501 / :3500+tls<br/>proxy_protocol → frontend / backend"]
+        NStream --> NHttp
+    end
+
+    %% ──────── 应用层 ────────
+    subgraph APP["应用层 (内网)"]
+        direction TB
+        Frontend["Frontend · Next.js<br/>:3000<br/>App Router / components / lib"]
+        Backend["Backend · FastAPI<br/>:8000<br/>api/* + services/* + orchestrator + workers"]
+    end
+
+    %% ──────── 存储 / 外部 ────────
+    subgraph DEPS["存储 / 外部依赖"]
+        direction LR
+        Postgres["Postgres 16 + pgvector<br/>:5432<br/>持久化 + 向量"]
+        NewAPI["NewAPI<br/>:5000<br/>OpenAI 兼容 LLM 网关"]
+        MinerU["MinerU<br/>PDF 解析"]
+        Zhipu["智谱 GLM<br/>embedding API"]
+    end
+
+    Upstream["上游模型<br/>gpt-4o / claude / gemini / agnes / MiniMax-M3"]
+
+    %% ──────── 连接 ────────
+    Browser -- "HTTPS :3500" --> NStream
+    NHttp -- "/ (静态/SSR)" --> Frontend
+    NHttp -- "/api/* + SSE" --> Backend
+
+    Backend -- "pgvector / SQL" --> Postgres
+    Backend -- "chat / stream" --> NewAPI
+    Backend -- "解析 PDF/Office" --> MinerU
+    Backend -- "embed chunks" --> Zhipu
+
+    NewAPI --> Upstream
+
+    %% ──────── 样式 ────────
+    classDef ext fill:#fef3c7,stroke:#b45309,color:#000
+    classDef store fill:#dbeafe,stroke:#1d4ed8,color:#000
+    classDef app fill:#dcfce7,stroke:#15803d,color:#000
+    classDef edge fill:#fee2e2,stroke:#b91c1c,color:#000
+
+    class Browser,Upstream ext
+    class Postgres,NewAPI,MinerU,Zhipu store
+    class Frontend,Backend app
+    class NGINX edge
 ```
-                              ┌──────────────────────────────────────────────┐
-                              │              公网用户浏览器                   │
-                              │   Next.js 客户端（SPA + EventSource）         │
-                              └───────────────────────┬──────────────────────┘
-                                                      │ HTTPS :3500
-                                                      ▼
-                              ┌──────────────────────────────────────────────┐
-                              │           Nginx (botgroup-nginx)            │
-                              │  ┌─ stream ─────────────────────────────────┐│
-                              │  │ :3500 → 嗅探 0x16 → TLS 解密              ││
-                              │  └──────────────────────────────────────────┘│
-                              │  ┌─ http ───────────────────────────────────┐│
-                              │  │ :3501 → proxy_protocol → frontend        ││
-                              │  │ :3500/tls → proxy_protocol → backend     ││
-                              │  └──────────────────────────────────────────┘│
-                              └───────────┬─────────────────────┬────────────┘
-                                          │ /                   │ /api/*
-                                          ▼                     ▼
-                          ┌────────────────────────┐  ┌────────────────────────┐
-                          │  Frontend (Next.js)    │  │  Backend (FastAPI)     │
-                          │  :3000 (内)            │  │  :8000 (内)            │
-                          │                        │  │  ┌──────────────────┐ │
-                          │  - App Router 路由     │  │  │ api/*            │ │
-                          │  - components/*        │  │  │ services/*       │ │
-                          │  - lib/api.ts          │  │  │ orchestrator/    │ │
-                          │                        │  │  │ workers/         │ │
-                          │                        │  │  └──────────────────┘ │
-                          └────────────────────────┘  └──────┬─────────────────┘
-                                                          │
-              ┌──────────────────┬──────────────────┬─────┴──────┬─────────────┐
-              ▼                  ▼                  ▼            ▼             ▼
-   ┌─────────────────┐ ┌─────────────────┐ ┌────────────────┐ ┌──────────────────────┐
-   │ Postgres 16     │ │ NewAPI          │ │ MinerU         │ │ 智谱 GLM           │
-   │ (pgvector)      │ │ (OpenAI 兼容)   │ │ (PDF 解析)     │ │ (embedding API)     │
-   │ :5432           │ │ :5000           │ │                │ │                      │
-   │ 持久化 + 向量   │ │ LLM 网关        │ │ 文档解析       │ │ 向量生成             │
-   └─────────────────┘ └────────┬────────┘ └────────────────┘ └──────────────────────┘
-                                │
-                                ▼
-                    ┌──────────────────────┐
-                    │ 上游模型             │
-                    │ gpt-4o / claude /    │
-                    │ gemini / agnes /     │
-                    │ MiniMax-M3 / ...     │
-                    └──────────────────────┘
-```
+
+> 渲染器无 Mermaid 支持时，可参考 [system-architecture.txt](system-architecture.txt)（ASCII 备份）。
 
 ---
 
@@ -69,10 +78,29 @@
 
 ## 3. 信任边界
 
-```
-Browser  ───[不信任]───  Nginx  ───[不信任]───  Frontend / Backend  ───[信任]───  DB / 外部依赖
-                              │
-                              └─ 审计边界：所有跨边界的 HTTP 调用都打 audit_log
+```mermaid
+flowchart LR
+    Browser["浏览器<br/>(不信任)"]
+    Nginx["Nginx<br/>(不信任)"]
+    App["Frontend / Backend<br/>(信任)"]
+    Deps["DB / 外部依赖<br/>(信任)"]
+
+    Browser -- "TLS 终结" --> Nginx
+    Nginx -- "proxy_protocol" --> App
+    App --> Deps
+
+    Audit{{"审计边界：所有跨边界的写调用打 audit_log"}}
+
+    Browser -. "audit" .-> Audit
+    Nginx -. "audit" .-> Audit
+    App -. "audit" .-> Audit
+
+    classDef trust fill:#dcfce7,stroke:#15803d
+    classDef untrust fill:#fee2e2,stroke:#b91c1c
+    classDef boundary fill:#fef9c3,stroke:#ca8a04
+    class Browser,Nginx untrust
+    class App,Deps trust
+    class Audit boundary
 ```
 
 - 浏览器 ↔ Nginx：HTTPS，TLS 终结在 Nginx

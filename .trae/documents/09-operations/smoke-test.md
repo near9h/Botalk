@@ -2,6 +2,19 @@
 
 > 每次升级 / 部署后必跑。
 
+```mermaid
+flowchart LR
+    Start([部署完成]) --> Auth[2.1 鉴权<br/>POST /api/auth/login]
+    Auth --> Health[2.2 健康<br/>docker compose ps]
+    Health --> Api[2.3 核心 API<br/>/api/bots /api/kb /api/groups]
+    Api --> Chat[2.4 流式 chat<br/>SSE -N 抓 500B]
+    Chat --> Rename[2.5 KB 重命名<br/>PATCH 改 + 还原]
+    Rename --> Pass{全部通过?}
+    Pass -- 是 --> End([发布成功])
+    Pass -- 否 --> Rollback[回滚<br/>upgrade.md § 3]
+    Rollback --> IR[走 incident-response.md]
+```
+
 ## 1. 前置
 
 ```bash

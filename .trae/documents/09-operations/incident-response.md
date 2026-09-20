@@ -13,6 +13,29 @@
 
 ## 2. P0 / P1 响应流程
 
+```mermaid
+flowchart TD
+    A([故障触发]) --> B{服务不可用?}
+    B -- 是 --> C[P0：5 分钟响应<br/>拉群 + 通知]
+    B -- 否 --> D{核心功能降级?}
+    D -- 是 --> E[P1：30 分钟响应]
+    D -- 否 --> F[P2/P3：常规处理]
+
+    C --> G[第一分钟<br/>docker ps<br/>docker compose restart backend]
+    E --> G
+    G --> H{恢复?}
+    H -- 是 --> Z1([收尾 + 写 post-mortem])
+    H -- 否 --> I[第二分钟<br/>docker compose logs --tail=300<br/>pg_isready + pg_stat_activity<br/>df -h / free -m / docker stats]
+    I --> J{找到原因?}
+    J -- 代码 --> K[第三分钟<br/>git checkout good-sha<br/>docker compose up -d --build]
+    J -- 配置 --> L[回滚 .env / nginx<br/>docker compose restart]
+    J -- 数据 --> M[走 backup-restore.md § 2]
+    K --> Z1
+    L --> Z1
+    M --> Z1
+    Z1 -. 24h 内 .-> PM[出 post-mortem.md<br/>录入 history/]
+```
+
 ### 2.1 第一分钟（止血）
 
 ```bash

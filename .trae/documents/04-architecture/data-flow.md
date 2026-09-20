@@ -89,6 +89,30 @@ msghub.run_group_discussion (orchestrator/msghub.py)
   │ SSE event: done
   ▼
 Browser EventSource 逐条追加到 UI（ChatBubble）
+
+**F2 内部细节（Mermaid）**：
+
+```mermaid
+flowchart TB
+    Start([run_group_discussion 进入])
+    Start --> LoadPrior[加载 prior_history<br/>_load_prior_history]
+    LoadPrior --> LoopBot{对每个 bot}
+
+    LoopBot -- 有 --> OneTurn[runner.run_one_turn]
+    OneTurn --> LD[language_detect → zh/en]
+    LD --> BuildSP[构造 system prompt<br/>persona + 回复语言 + 引用块]
+    BuildSP --> RAG[rag_retriever → local_retriever<br/>BM25 + pgvector + RRF]
+    RAG --> Stream[流式调 NewAPI<br/>openai_compat.stream]
+    Stream --> Chip[注入 @@CITATION_n@@]
+    Chip --> Persist[落 messages + audit_log]
+    Persist --> LoopBot
+
+    LoopBot -- 全部完成 --> Summarize[_summarize]
+    Summarize --> SumSP[注入 [回复语言] 模板]
+    SumSP --> SumStream[NewAPI 流式生成 📋 总结]
+    SumStream --> Done[SSE event: done]
+
+    Done --> Browser([Browser UI 持续追加])
 ```
 
 **SSE 事件**：
@@ -137,6 +161,50 @@ ingest_worker.run (workers/ingest_worker.py)
 Frontend 拿到 status=ready 即可用于检索
 ```
 
+**F3 流程图（Mermaid）**：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant API as Backend<br/>(kb.py)
+    participant FS as data/uploads/
+    participant W as ingest_worker
+    participant LP as LibreOffice<br/>(office_pdf)
+    participant M as MinerU
+    participant Z as zhipuai_embed
+    participant DB as Postgres
+
+    B->>API: POST /api/kb/{id}/documents
+    API->>API: require_user + _can_modify<br/>mime + size
+    API->>FS: 写文件
+    API->>DB: attachments + kb_documents<br/>(status=pending)
+    API-->>B: 202 doc_id
+
+    par 后台 worker
+        API->>W: asyncio.create_task(run)
+        W->>DB: status=parsing
+        alt mime=pdf
+            W->>M: 解析 PDF
+        else mime=office
+            W->>LP: Office → PDF
+            LP->>M: 解析 PDF
+        end
+        M-->>W: 文本 + bbox
+        W->>DB: kb_chunks 写 N 行
+        W->>Z: embed chunks
+        Z-->>W: vectors
+        W->>DB: embedding 写回
+        W->>DB: status=ready
+        W->>DB: audit_log
+    end
+
+    loop 前端轮询
+        B->>API: GET /api/kb/{id}/documents/{doc_id}
+        API-->>B: status
+    end
+```
+
 ---
 
 ## 5. F4 KB 检索 + 引用
@@ -159,7 +227,7 @@ msghub 拿 snippet 列表注入 system prompt：
    [1] {snippet_1}（page {p1}）
    [2] {snippet_2}（page {p2}）
    ...
-   引用时用 [n] 标注 ..."
+ 引用时用 [n] 标注 ..."
   │
   ▼
 LLM 输出含 [1] [2] → 前端替换为 @@CITATION_1@@ @@CITATION_2@@
@@ -173,6 +241,20 @@ LLM 输出含 [1] [2] → 前端替换为 @@CITATION_1@@ @@CITATION_2@@
 ChunkPreview / PdfViewerWithBbox 拉 /api/kb/{kb_id}/chunks/{chunk_id}
   │   → bbox + snippet
   │   → PDF.js 跳页 + 画红色 bbox 框
+```
+
+**F4 流程图（Mermaid）**：
+
+```mermaid
+flowchart LR
+    Q[query] --> LR[local_retriever<br/>BM25 + pgvector cosine]
+    LR -->|RRF 融合| Top[top-k chunks]
+    Top --> SP[注入 system prompt<br/>参考资料 [n] snippet page]
+    T[LLM 输出<br/>含 [n]] --> Rep[前端替换为<br/>@@CITATION_n@@]
+    Rep --> Chip["cite-chip button"]
+    Chip -->|点击| Drawer[CitationDrawerContext.open]
+    Drawer --> API[GET /api/kb/id/chunks/id]
+    API --> PDF[PDF.js 跳页 + bbox]
 ```
 
 ---
@@ -203,6 +285,17 @@ NewAPI（内部按 model 路由）
 runner 逐 chunk 解析 → 写入 message 流
 ```
 
+**F5 流程图（Mermaid）**：
+
+```mermaid
+flowchart LR
+    Caller["msghub / runner / _summarize"] -->|chat.completions.stream| Svc["services/openai_compat"]
+    Svc -->|HTTP + Bearer Key| NA["NewAPI :5000<br/>(OpenAI 兼容网关)"]
+    NA -->|按 model 路由| Up["上游厂商<br/>OpenAI / Anthropic / Google"]
+    Up -->|流式 SSE 回包| Svc
+    Svc -->|逐 chunk| Msg[写入 messages 流]
+```
+
 ---
 
 ## 7. F6 审计落库
@@ -229,32 +322,61 @@ async def handler(
 
 查询：`SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 50;`
 
+**F6 流程图（Mermaid）**：
+
+```mermaid
+flowchart LR
+    REQ["任意写操作<br/>(POST / PATCH / DELETE)"] --> CTX["Depends(audit_ctx)<br/>从 X-Real-IP 拿 client_ip"]
+    REQ --> HANDLE["业务 handler"]
+    HANDLE --> LOG["audit_service.log(<br/>action, target_*, detail)"]
+    LOG --> TBL[("audit_log 表<br/>id / actor / client_ip<br/>action / target_type<br/>target_id / detail / ts")]
+    OPS[运维 / 内审] -->|"SELECT ... ORDER BY ts DESC"| TBL
+```
+
 ---
 
 ## 8. 端到端时序（一句话聊天）
 
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant B as Browser<br/>(EventSource)
+    participant N as Nginx :3500
+    participant API as Backend :8000<br/>(chat.py)
+    participant MS as msghub<br/>(orchestrator)
+    participant LR as local_retriever<br/>(pgvector+BM25)
+    participant NA as NewAPI :5000
+    participant DB as Postgres
+
+    U->>B: 在 group 输入 prompt
+    B->>N: EventSource /api/chat/stream
+    N->>API: 反代 + proxy_protocol<br/>(带 client_ip)
+    API->>API: require_user → 加载 group/bots
+    API->>MS: run_group_discussion
+
+    loop 每个 bot 轮次
+        MS->>MS: language_detect → "zh"
+        MS->>LR: retrieve_for_bot(bot_id, query)
+        LR->>DB: SELECT ... FROM kb_chunks<br/>(pgvector cosine + BM25)
+        DB-->>LR: top-5 chunks
+        LR-->>MS: chunks + context_block
+        MS->>NA: chat.completions.stream(...)
+        NA->>NA: 路由到上游模型<br/>(gpt-4o / claude / ...)
+        NA-->>MS: 流式 token
+        MS-->>B: SSE event: message
+        MS->>DB: 落 messages + audit_log
+        MS->>B: SSE event: citation (snippet)
+    end
+
+    MS->>NA: _summarize (流式)
+    NA-->>MS: 📋 总结 token
+    MS-->>B: SSE event: summary
+    MS->>B: SSE event: done
+    B->>U: UI 持续追加气泡
 ```
-[Browser] 用户在 group 输入"分析新加坡核保手册对高血压客户的核保结论"
-   │  EventSource('/api/chat/stream?prompt=...')
-   ▼
-[Nginx]   终结 TLS，反代到 backend:8000，带 client_ip
-   ▼
-[Backend] require_user → 加载 group/bots → msghub.run_group_discussion
-   ▼
-[msghub]  对每个 bot 轮次：
-   ▼           ├─ language_detect → "zh"
-   ▼           ├─ rag_retriever → local_retriever（BM25 + pgvector + RRF）→ top-5 chunks
-   ▼           ├─ openai_compat.stream(...)
-   ▼           │     ▼
-   ▼           │  [NewAPI] → 上游 gpt-4o → 流式 token 回包
-   ▼           ├─ 流式 SSE event: message / citation 推回 Browser
-   ▼           ├─ 落 messages + audit_log
-   ▼           └─ 检测 max_rounds / stop token → 退出
-   ▼
-[msghub]  全部 bot 完事 → _summarize → NewAPI → 📋 总结
-   ▼
-[Browser] EventSource 关闭 / EventSource.onmessage 持续追加 UI
-```
+
+> 渲染器无 Mermaid 支持时，可参考 [data-flow.txt](data-flow.txt)（ASCII 备份）。
 
 ---
 

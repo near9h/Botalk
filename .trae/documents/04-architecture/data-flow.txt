@@ -1,0 +1,144 @@
+.trae/documents/04-architecture/data-flow.md — ASCII 备份
+====================================================
+
+本文件是 data-flow.md 的纯文本兜底，便于不支持 Mermaid 的渲染器查看。
+推荐用支持 Mermaid 的渲染器（GitHub / GitLab / VSCode / Trae IDE）看主文档。
+
+──────────────────────────────────────────────────────────
+§ 8 端到端时序（一句话聊天）
+──────────────────────────────────────────────────────────
+
+[Browser]  用户在 group 输入"分析新加坡核保手册对高血压客户的核保结论"
+   │  EventSource('/api/chat/stream?prompt=...')
+   ▼
+[Nginx]    终结 TLS，反代到 backend:8000，带 client_ip
+   ▼
+[Backend]  require_user → 加载 group/bots → msghub.run_group_discussion
+   ▼
+[msghub]   对每个 bot 轮次：
+   ▼           ├─ language_detect → "zh"
+   ▼           ├─ rag_retriever → local_retriever（BM25 + pgvector + RRF）→ top-5 chunks
+   ▼           ├─ openai_compat.stream(...)
+   ▼           │     ▼
+   ▼           │  [NewAPI] → 上游 gpt-4o → 流式 token 回包
+   ▼           ├─ 流式 SSE event: message / citation 推回 Browser
+   ▼           ├─ 落 messages + audit_log
+   ▼           └─ 检测 max_rounds / stop token → 退出
+   ▼
+[msghub]   全部 bot 完事 → _summarize → NewAPI → 📋 总结
+   ▼
+[Browser]  EventSource 关闭 / EventSource.onmessage 持续追加 UI
+
+──────────────────────────────────────────────────────────
+§ F2 内部细节
+──────────────────────────────────────────────────────────
+
+run_group_discussion 进入
+  ↓
+加载 prior_history（_load_prior_history）
+  ↓
+对每个 bot：
+  runner.run_one_turn
+    → language_detect → zh/en
+    → 构造 system prompt（persona + [回复语言] + 引用块）
+    → rag_retriever → local_retriever（BM25 + pgvector + RRF）
+    → 流式调 NewAPI（openai_compat.stream）
+    → 注入 @@CITATION_n@@
+    → 落 messages + audit_log
+  循环至全部 bot 完事
+  ↓
+_summarize
+  → 注入 [回复语言] 模板
+  → NewAPI 流式生成 📋 总结
+  → SSE event: done
+  ↓
+Browser UI 持续追加气泡
+
+──────────────────────────────────────────────────────────
+§ F3 KB 上传 + 解析
+──────────────────────────────────────────────────────────
+
+Browser POST /api/kb/{id}/documents (multipart)
+  → Backend (kb.py)
+      → require_user + _can_modify + mime + size 校验
+      → 写文件 data/uploads/
+      → attachments + kb_documents（status=pending）
+      → asyncio.create_task(ingest_worker.run)
+      → 立即返回 202 + doc_id
+
+  ingest_worker.run（后台）：
+    → status=parsing
+    → 分支：
+        mime=pdf → MinerU 解析
+        mime=office → LibreOffice 转 PDF → MinerU 解析
+    → kb_chunks 写 N 行（含 bbox_json + snippet）
+    → zhipuai_embed → embedding 写回
+    → status=ready
+    → audit_log
+
+  Frontend 轮询 GET /api/kb/{id}/documents/{doc_id} 直到 status=ready
+
+  任何一步抛异常 → status=failed + 写 error 字段
+
+──────────────────────────────────────────────────────────
+§ F4 KB 检索 + 引用
+──────────────────────────────────────────────────────────
+
+query → local_retriever（BM25 + pgvector cosine）
+  → RRF 融合 → top-k chunks
+  → 注入 system prompt（参考资料 [n] snippet page）
+  → LLM 输出含 [n]
+  → 前端替换为 @@CITATION_n@@
+  → markdown 渲染为 <button class="cite-chip">[1]</button>
+  → 点击 chip → CitationDrawerContext.open(chunk_id)
+  → GET /api/kb/{kb_id}/chunks/{chunk_id} → bbox + snippet
+  → PDF.js 跳页 + 画红色 bbox 框
+
+──────────────────────────────────────────────────────────
+§ F5 LLM 调用
+──────────────────────────────────────────────────────────
+
+msghub / runner / _summarize
+  ↓
+services/openai_compat.chat_completions(
+    base_url=NEWAPI_BASE_URL,    # http://new-api:5000/v1
+    api_key=NEWAPI_API_KEY,
+    model=bot.model,
+    messages=[...],
+    max_tokens=max_tokens_for_task,  # 2048 / 4096 / 1024
+    stream=True,
+    timeout=REQUEST_TIMEOUT_SECONDS, # 120
+)
+  ↓
+NewAPI（按 model 路由）
+  ↓
+上游厂商 API（OpenAI / Anthropic / Google / ...）
+  ↓ （流式 SSE 回包）
+runner 逐 chunk 解析 → 写入 message 流
+
+──────────────────────────────────────────────────────────
+§ F6 审计落库
+──────────────────────────────────────────────────────────
+
+任意写操作（POST / PATCH / DELETE）
+  ↓
+Depends(audit_ctx)  ← 从 X-Real-IP / proxy_protocol 拿 client_ip
+  ↓
+业务 handler
+  ↓
+audit_service.log(
+    action="kb.create",   # 动词.名词
+    target_type="kb",
+    target_id=str(kb.id),
+    target_name=kb.name,
+    detail={"foo":"bar"},
+)
+  ↓
+audit_log 表
+  ├─ id / actor / client_ip
+  ├─ action / target_type / target_id
+  ├─ detail (JSON)
+  └─ created_at
+
+运维 / 内审：
+  SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 50;

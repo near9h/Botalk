@@ -4,23 +4,29 @@
 
 ---
 
-## 1. 系统总览
+## 1. 系统总览（Mermaid）
 
-```
-                       ┌────────────────────┐
-   Browser (Next.js)──▶│ Nginx :3500 (TLS)  │──▶ Next.js :3000 (frontend)
-                       │  stream-routing    │──▶ FastAPI :8000 (backend, expose)
-                       └────────────────────┘            │
-                                                          ▼
-                                  ┌──────────────── PostgreSQL :5432 (kbvector/pg16)
-                                  │  - bots / groups / messages
-                                  │  - attachments / kb_documents / kb_chunks
-                                  │  - audit_log
-                                  └────────────────
-   FastAPI ──▶ services/* ──▶ NewAPI :5000  (OpenAI 兼容)
-                                  ▲
-                                  └─ MinerU / LibreOffice (doc parsing)
-                                  └─ zhipuai GLM (embedding, 写入 pgvector)
+完整架构图见 [system-architecture.md](system-architecture.md)；下面是简化版（一眼看容器）：
+
+```mermaid
+flowchart LR
+    Browser["浏览器"]
+    Nginx["Nginx :3500"]
+    Frontend["Next.js :3000"]
+    Backend["FastAPI :8000"]
+    PG["Postgres+pgvector :5432"]
+    NewAPI["NewAPI :5000"]
+    Zhipu["智谱 GLM<br/>(embedding)"]
+    MinerU["MinerU<br/>(PDF 解析)"]
+
+    Browser --> Nginx
+    Nginx -- "/ (静态)" --> Frontend
+    Nginx -- "/api/* + SSE" --> Backend
+    Backend --> PG
+    Backend --> NewAPI
+    Backend --> Zhipu
+    Backend --> MinerU
+    MinerU --> Zhipu
 ```
 
 ---
