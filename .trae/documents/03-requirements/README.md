@@ -54,7 +54,7 @@
 
 - 上传 PDF / Word / Excel / PPT
 - MinerU 解析 + LibreOffice headless 转 PDF
-- 三种检索：BM25 + 向量 + RAGFlow（可选）
+- 检索：BM25 + pgvector cosine + RRF 融合（单一方案）
 - 引用稳定（见 [06/citation-stability.md](../06-implementation/citation-stability.md)）
 
 #### 3.1.5 审计（Audit）

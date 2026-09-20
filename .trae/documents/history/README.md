@@ -7,7 +7,8 @@
 
 | 原文件 | 主题 | 现位置（活跃文档） |
 | --- | --- | --- |
-| `knowledge_base_rag_plan.md` | RAG 整体设计 | 现 [../04-architecture/rag-design.md](../04-architecture/rag-design.md) |
+| `knowledge_base_rag_plan.md` | RAG 整体设计（早期） | 已合并进 [../04-architecture/hybrid-bm25-rag.md](../04-architecture/hybrid-bm25-rag.md) + [../04-architecture/rag-design.md](../04-architecture/rag-design.md) |
+| `rag-design.md` | RAGFlow 时代的方案（**已废弃**） | 现 [../adr/0004-kb-local-rag.md](../adr/0004-kb-local-rag.md)（明确放弃 RAGFlow） |
 | `hybrid-bm25-rag-plan.md` | BM25+向量融合 | 现 [../04-architecture/hybrid-bm25-rag.md](../04-architecture/hybrid-bm25-rag.md) |
 | `sentence-window-context-plan.md` | 句窗上下文 | 现 [../04-architecture/sentence-window-context.md](../04-architecture/sentence-window-context.md) |
 | `skill-center-plan.md` | 技能中心 | 现 [../04-architecture/skill-center.md](../04-architecture/skill-center.md) |

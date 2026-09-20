@@ -20,7 +20,7 @@
    FastAPI ──▶ services/* ──▶ NewAPI :5000  (OpenAI 兼容)
                                   ▲
                                   └─ MinerU / LibreOffice (doc parsing)
-                                  └─ RAGFlow (optional, see rag-design.md)
+                                  └─ zhipuai GLM (embedding, 写入 pgvector)
 ```
 
 ---
@@ -106,7 +106,7 @@
 - [ADR-0001：三层部署架构](../adr/0001-three-tier-compose.md)
 - [ADR-0002：自研编排器 vs AgentScope](../adr/0002-orchestrator-choice.md)
 - [ADR-0003：流式用 SSE 而非 WebSocket](../adr/0003-sse-vs-websocket.md)
-- [ADR-0004：KB 用本地 BM25+向量 而非默认 RAGFlow](../adr/0004-kb-local-rag.md)
+- [ADR-0004：KB 检索 = pgvector + 智谱 GLM embedding（不再引入 RAGFlow）](../adr/0004-kb-local-rag.md)
 
 ---
 

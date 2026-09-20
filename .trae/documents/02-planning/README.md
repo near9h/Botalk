@@ -76,7 +76,7 @@
 
 - AgentScope 的 MsgHub 多 Agent 编排能直接满足"群聊对抗"需求，**自研** 而不引入庞大框架；
 - 流式渲染走 SSE + EventSource，**不用 WebSocket**（避免双向通信复杂度）；
-- 文档解析走 MinerU + LibreOffice headless，**不依赖 RAGFlow 服务**（解耦部署）。
+- 文档解析走 MinerU + LibreOffice headless，**不依赖任何外部 RAG 服务**（pgvector + 智谱 GLM embedding 自包含）。
 
 ---
 

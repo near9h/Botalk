@@ -8,7 +8,7 @@
 | [0001](0001-three-tier-compose.md) | 单机 Docker Compose 三层部署 | Accepted |
 | [0002](0002-orchestrator-choice.md) | 自研编排器 vs AgentScope | Accepted |
 | [0003](0003-sse-vs-websocket.md) | 流式用 SSE 而非 WebSocket | Accepted |
-| [0004](0004-kb-local-rag.md) | KB 默认本地 BM25+向量 | Accepted |
+| [0004](0004-kb-local-rag.md) | KB 检索 = pgvector + 智谱 GLM embedding（不再引入 RAGFlow） | Accepted |
 
 ## 写作模板
 

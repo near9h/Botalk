@@ -30,11 +30,11 @@
 | 模块 | 作用 |
 | --- | --- |
 | `audit.py` | 跨路由审计中间件 |
-| `rag_retriever.py` | 主 RAG 检索（融合 BM25+向量+RAGFlow） |
-| `local_retriever.py` | 本地 BM25 + 向量 |
+| `rag_retriever.py` | 主 RAG 检索（pgvector + BM25 + RRF 融合） |
+| `local_retriever.py` | 本地 pgvector cosine + BM25 检索 |
 | `citation_aligner.py` | chunk snippet ↔ 原文 对齐 |
 | `sentence_window.py` | 上下文窗口扩展 |
-| `ragflow_client.py` | RAGFlow HTTP 客户端（可选） |
+| `ragflow_client.py` | **兼容 stub**（`is_configured()` 永远 `False`，不再调用） |
 | `policy.py` | 群组策略执行（防火墙） |
 | `community.py` | 群组动态聚类（探索性） |
 | `language_detect.py` | 中英文启发式检测 |

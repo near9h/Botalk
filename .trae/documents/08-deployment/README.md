@@ -71,7 +71,7 @@ docker compose logs -f backend   # 等 alembic upgrade head 完成
 | `AUTH_BOOTSTRAP_PASSWORD` | admin | 同上 |
 | `MAX_TOKENS_PER_CALL` | 2048 | |
 | `REQUEST_TIMEOUT_SECONDS` | 120 | |
-| `RAGFLOW_*` | (空) | 可选；不配则走本地检索 |
+| `RAGFLOW_*` | (已移除) | **不再使用**。KB 检索走 pgvector + 智谱 GLM embedding（见 [ADR-0004](../adr/0004-kb-local-rag.md)） |
 
 详见 [`.env.example`](../../../.env.example)。
 

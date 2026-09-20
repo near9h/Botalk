@@ -12,7 +12,7 @@
 | F1 | 用户认证 | 浏览器 | backend `/api/auth/*` | HTTPS + Cookie | [`backend/app/api/auth.py`](../../../backend/app/api/auth.py) |
 | F2 | 流式聊天 | 浏览器 | backend `/api/chat/stream` | HTTPS + SSE | [`backend/app/api/chat.py`](../../../backend/app/api/chat.py) + [`backend/app/orchestrator/msghub.py`](../../../backend/app/orchestrator/msghub.py) |
 | F3 | KB 上传 + 解析 | 浏览器 | backend → workers → MinerU | HTTPS + multipart | [`backend/app/api/kb.py`](../../../backend/app/api/kb.py) + [`workers/ingest_worker.py`](../../../backend/app/workers/ingest_worker.py) |
-| F4 | KB 检索 + 引用 | orchestrator | local_retriever / ragflow | JS chunks | [`backend/app/services/local_retriever.py`](../../../backend/app/services/local_retriever.py) |
+| F4 | KB 检索 + 引用 | orchestrator | local_retriever (pgvector + BM25) | JS chunks | [`backend/app/services/local_retriever.py`](../../../backend/app/services/local_retriever.py) |
 | F5 | LLM 调用 | orchestrator | NewAPI → 厂商 | HTTP + JSON | [`backend/app/services/*`](../../../backend/app/services/) |
 | F6 | 审计落库 | 所有写操作 | Postgres `audit_log` | asyncpg | [`backend/app/services/audit.py`](../../../backend/app/services/audit.py) |
 
@@ -68,9 +68,8 @@ msghub.run_group_discussion (orchestrator/msghub.py)
   │  │ runner.run_one_turn(bot, prompt, prior)                       │
   │  │   1. 检测用户语种（services/language_detect）                  │
   │  │   2. 构造 system prompt = persona + [回复语言] + 引用块         │
-  │  │   3. RAG 检索（services/rag_retriever）                       │
-  │  │     ├─ 本地（local_retriever）：BM25 + 向量 + RRF 融合          │
-  │  │     └─ 或 RAGFlow（如配）                                      │
+  │  │   3. RAG 检索（services/rag_retriever → local_retriever）      │
+  │  │      pgvector cosine + BM25 + RRF 融合（唯一路径）            │
   │  │   4. 流式调 NewAPI（services/openai_compat）                   │
   │  │   5. 边流式输出 → SSE event: message                          │
   │  │   6. 引用 chip 注入（@@MENTION_n@@）                          │
@@ -146,18 +145,13 @@ Frontend 拿到 status=ready 即可用于检索
 orchestrator 拿到当前 prompt
   │
   ▼
-rag_retriever.retrieve(kb, query, top_k)
+rag_retriever.retrieve_for_bot(bot_id, query, session)
   │
-  ├─ 本地路径（默认）：
-  │  local_retriever.search(query)
-  │    ├─ BM25 over kb_chunks.snippet
-  │    ├─ 向量近邻 over kb_chunks.embedding（pgvector）
-  │    ├─ RRF 融合
-  │    └─ 返回 top-k [{chunk_id, snippet, page, bbox_json, score}]
-  │
-  └─ RAGFlow 路径（如配）：
-     ragflow_client.search(dataset_id, query)
-      └─ 返回 [{chunk_id, snippet, page, bbox_json, score}]
+  └─ local_retriever.retrieve(bot_id, query, session, top_k=top_k, top_n=top_n)
+        ├─ BM25 over kb_chunks.snippet              (兜底)
+        ├─ pgvector cosine over kb_chunks.embedding (主召回)
+        ├─ RRF 融合
+        └─ 返回 top-k [{chunk_id, snippet, page, bbox_json, score, ...}]
   │
   ▼
 msghub 拿 snippet 列表注入 system prompt：
@@ -249,7 +243,7 @@ async def handler(
    ▼
 [msghub]  对每个 bot 轮次：
    ▼           ├─ language_detect → "zh"
-   ▼           ├─ rag_retriever（ragflow 路径失败 → local_retriever）→ top-5 chunks
+   ▼           ├─ rag_retriever → local_retriever（BM25 + pgvector + RRF）→ top-5 chunks
    ▼           ├─ openai_compat.stream(...)
    ▼           │     ▼
    ▼           │  [NewAPI] → 上游 gpt-4o → 流式 token 回包

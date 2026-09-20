@@ -68,7 +68,7 @@ docker compose up -d --build
 | `alembic upgrade head` 失败 | 看 migration 文件 | [backup-restore.md](backup-restore.md) § 3.3 |
 | LLM 全部 401 | NewAPI key 失效 | 检查 `.env` 中 `NEWAPI_API_KEY` |
 | 流式断流 | NewAPI 超时 / nginx 缓冲 | `proxy_buffering off` 已在 nginx 配置 |
-| 引用全空 | RAGFlow 配置问题 | [04-architecture/rag-design.md](../04-architecture/rag-design.md) |
+| 引用全空 | pgvector / 智谱 GLM 配置问题 | [04-architecture/rag-design.md](../04-architecture/rag-design.md) |
 | 上传文档卡在 `parsing` | MinerU 容器不可用 | `docker logs mineru`（如部署） |
 
 ## 4. 联系方式

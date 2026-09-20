@@ -43,7 +43,7 @@ BotGroup 已有 ruff + pytest + bandit-ready 项目结构（用 `pyproject.toml`
 | `backend/app/api/groups.py` | owner 权限、scope 隔离 |
 | `backend/app/services/mineru.py` | 第三方 API 凭据 |
 | `backend/app/services/zhipuai_embed.py` | 第三方 API 凭据 |
-| `backend/app/services/ragflow_client.py` | 第三方 API 凭据 |
+| `backend/app/services/ragflow_client.py` | 已废弃的兼容 stub（不再发请求，凭据字段已移除） |
 | `backend/app/services/local_retriever.py` | SQL 拼接、SSO/RCE |
 | `backend/app/auth.py` | session 强度、bootstrap 密码 |
 | `backend/app/main.py` | CORS、middleware |
@@ -84,7 +84,7 @@ BotGroup 已有 ruff + pytest + bandit-ready 项目结构（用 `pyproject.toml`
    - ORDER BY/LIMIT 等动态拼接
 
 4. **SSRF / 第三方 API 出站**
-   - MinerU / GLM / RAGFlow 调用是否对 URL 校验
+   - MinerU / GLM / NewAPI 调用是否对 URL 校验
    - `kbDocumentPreviewUrl` 是否允许内网 URL
    - `httpx.AsyncClient` 是否限制 timeout、follow_redirects
 

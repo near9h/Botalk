@@ -27,7 +27,7 @@
 
 | 组件 | 用途 | 启用条件 | 备注 |
 | --- | --- | --- | --- |
-| **RAGFlow** | 外部 RAG 服务（高级检索） | `.env` 配 `RAGFLOW_*` | 不配则走本地 BM25+向量（`services/local_retriever.py`） |
+| **RAGFlow** | ❌ **不引入**。`backend/app/services/ragflow_client.py` 只是兼容 stub（`is_configured()` 永远 `False`）。详见 [ADR-0004](../adr/0004-kb-local-rag.md)。 |
 | **MinerU** | PDF 文档解析 | KB 上传 PDF 时必走；Office 先转 PDF 再走 MinerU | 当前未容器化；运行时调外部 URL（`services/mineru.py`） |
 | **LibreOffice headless** | Office → PDF 转换 | `services/office_pdf.py` 调用 | 装在 backend 容器内（Dockerfile `apt-get install libreoffice`） |
 | **zhipuai embedding** | 向量生成 | `services/zhipuai_embed.py` | API 调用；无需容器 |
@@ -61,7 +61,7 @@
 | `pydantic` / `pydantic-settings` | schema + 配置 |
 | `bcrypt` / `passlib` | 密码哈希 |
 | `PyJWT` | 会话 token |
-| `httpx` | 调 NewAPI / RAGFlow |
+| `httpx` | 调 NewAPI / 智谱 GLM embedding |
 | `openai` | OpenAI 兼容 SDK（NewAPI 客户端） |
 | `python-multipart` | multipart 上传 |
 | `pypdf` / `pdfplumber` | PDF 解析兜底 |
