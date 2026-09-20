@@ -629,6 +629,17 @@ export const api = {
       body: JSON.stringify(body),
     }),
   getKb: (kbId: string) => request<KnowledgeBase>(`/api/kb/${kbId}`),
+  // Partial-update (rename today; description/is_public reserved for a
+  // later release). Mirrors `KbUpdate` on the backend; unknown keys are
+  // simply ignored server-side.
+  updateKb: (
+    kbId: string,
+    body: { name?: string; description?: string; is_public?: boolean },
+  ) =>
+    request<KnowledgeBase>(`/api/kb/${kbId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   deleteKb: (kbId: string) =>
     request<void>(`/api/kb/${kbId}`, { method: "DELETE" }),
   listKbDocuments: (kbId: string) =>

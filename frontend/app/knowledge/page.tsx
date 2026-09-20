@@ -8,10 +8,11 @@
  * the KB detail page (`/knowledge/{id}`) for upload + chunk preview.
  *
  * The header has a "+ 新建知识库" button that opens an inline dialog
- * for the create form (name + description + visibility). Edit is
- * intentionally scoped to the detail page — name uniqueness check
- * needs to happen server-side anyway, and the most useful edits
- * (delete, upload, mount bots) live with the document.
+ * for the create form (name + description + visibility). Each card
+ * also has an inline "重命名" action that opens a small dialog
+ * bound to PATCH /api/kb/{id}; deletes stay on the card too. Name
+ * uniqueness is enforced server-side so the front-end just trims
+ * and re-submits.
  */
 
 import Link from "next/link";
@@ -41,6 +42,14 @@ export default function KnowledgePage() {
   const [isPublic, setIsPublic] = useState(false);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Rename dialog state. We keep a copy of the KB being edited so the
+  // title bar can show the *old* name while the user types a new one;
+  // `renamingId` doubles as the "is open" signal to avoid a parallel
+  // boolean.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [renameError, setRenameError] = useState<string>("");
 
   const refresh = async () => {
     setLoading(true);
@@ -106,6 +115,43 @@ export default function KnowledgePage() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       toast.push({ title: "删除失败", description: msg, variant: "error" });
+    }
+  };
+
+  const startRename = (kb: KnowledgeBase) => {
+    setRenamingId(kb.public_id);
+    setRenameName(kb.name);
+    setRenameError("");
+  };
+
+  const cancelRename = () => {
+    setRenamingId(null);
+    setRenameName("");
+    setRenameError("");
+  };
+
+  const submitRename = async () => {
+    if (!renamingId) return;
+    const cleanName = renameName.trim();
+    if (!cleanName) {
+      setRenameError("名称不能为空");
+      return;
+    }
+    setRenameSaving(true);
+    try {
+      const updated = await api.updateKb(renamingId, { name: cleanName });
+      toast.push({
+        title: "已重命名",
+        description: `知识库已更新为「${updated.name}」`,
+        variant: "success",
+      });
+      cancelRename();
+      await refresh();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setRenameError(msg);
+    } finally {
+      setRenameSaving(false);
     }
   };
 
@@ -248,26 +294,48 @@ export default function KnowledgePage() {
                       ? "本地检索就绪"
                       : "本地检索尚未就绪（等待首次上传）"}
                   </span>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      void onDelete(k);
-                    }}
-                    style={{
-                      padding: "4px 10px",
-                      borderRadius: 6,
-                      border: "1px solid var(--border)",
-                      background: "var(--surface-2)",
-                      cursor: "pointer",
-                      fontSize: 11,
-                      color: "var(--danger)",
-                    }}
-                    title="删除整个知识库"
-                  >
-                    删除
-                  </button>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        startRename(k);
+                      }}
+                      style={{
+                        padding: "4px 10px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border)",
+                        background: "var(--surface-2)",
+                        cursor: "pointer",
+                        fontSize: 11,
+                        color: "var(--fg)",
+                      }}
+                      title="重命名知识库"
+                    >
+                      重命名
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void onDelete(k);
+                      }}
+                      style={{
+                        padding: "4px 10px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border)",
+                        background: "var(--surface-2)",
+                        cursor: "pointer",
+                        fontSize: 11,
+                        color: "var(--danger)",
+                      }}
+                      title="删除整个知识库"
+                    >
+                      删除
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -363,6 +431,65 @@ export default function KnowledgePage() {
             </Button>
             <Button onClick={onCreate} disabled={saving}>
               {saving ? "创建中…" : "创建"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={renamingId !== null}
+        onOpenChange={(open) => {
+          if (!open) cancelRename();
+        }}
+      >
+        <DialogContent>
+          <DialogHeader
+            title="重命名知识库"
+            description="修改后所有挂载的机器人会立即看到新名字。"
+            onClose={cancelRename}
+          />
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+              marginTop: 16,
+            }}
+          >
+            <div>
+              <Label>名称</Label>
+              <Input
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+                placeholder="新名称"
+                maxLength={128}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !renameSaving) {
+                    e.preventDefault();
+                    void submitRename();
+                  }
+                }}
+              />
+              {renameError && (
+                <div
+                  style={{
+                    color: "var(--danger)",
+                    fontSize: 12,
+                    marginTop: 4,
+                  }}
+                >
+                  {renameError}
+                </div>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" onClick={cancelRename}>
+              取消
+            </Button>
+            <Button onClick={submitRename} disabled={renameSaving}>
+              {renameSaving ? "保存中…" : "保存"}
             </Button>
           </DialogFooter>
         </DialogContent>

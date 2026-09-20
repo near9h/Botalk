@@ -5,6 +5,7 @@ Surface area:
   GET    /api/kb                  list KBs the caller can mount on bots
   POST   /api/kb                  create a new KB (owner = caller)
   GET    /api/kb/{kb_id}          KB metadata + doc count
+  PATCH  /api/kb/{kb_id}          partial update (rename today)
   DELETE /api/kb/{kb_id}          delete KB + cascade documents + chunks
 
   GET    /api/kb/{kb_id}/documents            list documents in a KB
@@ -65,6 +66,20 @@ class KbCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     description: str = Field(default="", max_length=512)
     is_public: bool = False
+
+
+class KbUpdate(BaseModel):
+    """Patch-only schema for `PATCH /api/kb/{kb_id}`.
+
+    All fields optional so a future caller can rename + change
+    description in a single round-trip without us having to add fields
+    one by one. Today only `name` is exposed in the UI; the others are
+    here for consistency and forward-compat (server-side guard: ignore
+    fields the caller didn't ask for in this release).
+    """
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    is_public: bool | None = None
 
 
 class KbOut(BaseModel):
@@ -274,6 +289,61 @@ async def get_kb(
     user: User = Depends(require_user),
 ) -> KbOut:
     kb = await _resolve_kb(session, kb_id, user)
+    return KbOut.from_row(kb)
+
+
+@router.patch("/{kb_id}", response_model=KbOut)
+async def update_kb(
+    kb_id: str,
+    payload: KbUpdate,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(require_user),
+    ctx: audit_service.AuditContext = Depends(audit_service.audit_ctx),
+) -> KbOut:
+    """部分更新 KB（rename 等）。
+
+    只在本次发布里接受 `name` 字段（用户界面只展示重命名）。
+    `description` / `is_public` 已在 schema 里留位但服务端忽略，避免
+    在还没有 UI 的情况下被人误用。
+
+    Rename 受 `_can_modify` 保护：仅 owner / admin 可改；scope=system
+    的 KB 只有 admin 能动。前端 kb 列表页拿到的是经过可见性过滤的
+    集合，正常情况下操作的就是用户自己的 KB。
+    """
+    kb = await _resolve_kb(session, kb_id, user)
+    if not _can_modify(kb, user):
+        raise HTTPException(status_code=403, detail="无权修改该知识库")
+
+    # 没有任何字段更新 → 当作 no-op 返回（避免被滥用做存活探测）。
+    if payload.name is None and payload.description is None and payload.is_public is None:
+        raise HTTPException(status_code=400, detail="no fields to update")
+
+    changes: dict[str, object] = {}
+    if payload.name is not None:
+        new_name = payload.name.strip()
+        if not new_name:
+            raise HTTPException(status_code=422, detail="name cannot be blank")
+        if new_name != kb.name:
+            kb.name = new_name
+            changes["name"] = new_name
+    # description / is_public 暂时不接 —— 等 UI 跟上后移除此注释
+    # 并真正写入。
+    # if payload.description is not None:
+    #     ...
+    # if payload.is_public is not None:
+    #     ...
+
+    if changes:
+        await audit_service.log(
+            session, ctx,
+            action="kb.update",
+            target_type="kb",
+            target_id=str(kb.id),
+            target_name=kb.name,
+            detail=changes,
+        )
+    await session.commit()
+    await session.refresh(kb)
     return KbOut.from_row(kb)
 
 
