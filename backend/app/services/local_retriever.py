@@ -198,16 +198,32 @@ async def retrieve(
     top_k: int | None = None,
     top_n: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Vector search over every KB mounted on `bot_id`.
+    """Hybrid (dense + BM25 + RRF) retrieval over every KB mounted on `bot_id`.
 
     Returns a list of dicts in the same shape the chat orchestrator
     expects (consumed by `rag_retriever._enrich_with_local_metadata`):
 
         { chunk_id, kb_doc_id, kb_id, filename, page, para, bbox,
-          snippet, score, document_name, content }
+          snippet, score, document_name, content, match_source }
+
+    Each returned dict now carries `match_source` — one of
+    ``"dense"`` (pgvector cosine hit), ``"bm25"`` (full-text-search
+    hit), or ``"both"`` (the same chunk appeared in both ranked
+    lists). Operators can use this signal to tune `rag_top_k_dense` /
+    `rag_top_k_bm25` / `rag_rrf_k` on a real eval set.
 
     Empty list on no-KB / not-configured / no-matches. Network errors
     are logged and swallowed; the caller treats them as "no chunks".
+
+    Pipeline:
+      1. Discover mounted KBs.
+      2. Embed the query once (GLM embedding-3).
+      3. Run dense cosine search (limited to `rag_top_k_dense`).
+      4. Run BM25 full-text search on `kb_chunks.tsv` (limited to
+         `rag_top_k_bm25`). Skipped when `rag_hybrid_enabled` is False.
+      5. Reciprocal Rank Fusion (k = `rag_rrf_k`) merges both ranked
+         lists into a single ordering.
+      6. Optional GLM rerank on the fused top-N.
     """
     if not query.strip() or not is_configured():
         return []
@@ -241,10 +257,11 @@ async def retrieve(
         return []
 
     top_k = top_k or settings.ragflow_top_k
+    top_k_dense = min(top_k, settings.rag_top_k_dense)
+    top_k_bm25 = settings.rag_top_k_bm25
 
-    # 3. Cosine-similarity search per KB. Using `<=>` (cosine distance,
-    #    0..2) is what the HNSW index is built for.
-    sql = text(
+    # 3. Dense (pgvector cosine) search.
+    dense_sql = text(
         """
         SELECT
           c.id            AS chunk_id,
@@ -266,25 +283,92 @@ async def retrieve(
         LIMIT :limit
         """
     )
-    rows = (
+    dense_rows = (
         await session.execute(
-            sql,
+            dense_sql,
             {
                 "vec": _vec_param(query_vec),
                 "kb_ids": kb_ids,
-                "limit": top_k,
+                "limit": top_k_dense,
             },
         )
     ).mappings().all()
 
-    # Cosine distance = 1 - cos_sim. Convert to a 0..1 similarity for
-    # downstream compatibility (the chat UI shows "相似度 87.3%").
+    # 4. BM25 (full-text) search. Only runs when `rag_hybrid_enabled`
+    #    AND the `tsv` column is in the schema (i.e. migration 0021
+    #    has been applied). The first SELECT returns 0 rows on a
+    #    legacy schema — the `match_source` tag on each hit stays at
+    #    "dense" so the rest of the pipeline is unchanged.
+    bm25_rows = []
+    if settings.rag_hybrid_enabled:
+        try:
+            bm25_sql = text(
+                """
+                SELECT
+                  c.id            AS chunk_id,
+                  c.kb_doc_id     AS kb_doc_id,
+                  d.kb_id         AS kb_id,
+                  c.page          AS page,
+                  c.para          AS para,
+                  c.bbox_json     AS bbox,
+                  c.text          AS content,
+                  c.snippet       AS snippet,
+                  a.filename      AS filename,
+                  ts_rank_cd(c.tsv, websearch_to_tsquery('simple', :q)) AS bm25_score
+                FROM kb_chunks c
+                JOIN kb_documents d ON d.id = c.kb_doc_id
+                JOIN attachments  a ON a.id = d.attachment_id
+                WHERE d.kb_id = ANY(:kb_ids)
+                  AND c.tsv @@ websearch_to_tsquery('simple', :q)
+                ORDER BY bm25_score DESC
+                LIMIT :limit
+                """
+            )
+            bm25_rows = (
+                await session.execute(
+                    bm25_sql,
+                    {
+                        "q": query,
+                        "kb_ids": kb_ids,
+                        "limit": top_k_bm25,
+                    },
+                )
+            ).mappings().all()
+        except Exception as exc:  # noqa: BLE001
+            # Missing column (pre-migration), or `websearch_to_tsquery`
+            # rejected the query (e.g. only stopwords). Don't break the
+            # chat — fall back to dense-only.
+            logger.warning(
+                "BM25 leg failed (likely missing `tsv` column or empty tsquery): %s",
+                exc,
+            )
+            bm25_rows = []
+
+    # 5. Reciprocal Rank Fusion.
+    fused = _reciprocal_rank_fusion(
+        dense_rows, bm25_rows, k=settings.rag_rrf_k,
+    )
+    if not fused:
+        return []
+
+    # Convert fused rows to the legacy `hits` shape, stamping each
+    # one with its match source so downstream code (and the chat UI)
+    # can tell where it came from.
     hits: list[dict[str, Any]] = []
-    for r in rows:
-        dist = float(r["distance"] or 1.0)
-        sim = max(0.0, 1.0 - dist)
-        if sim < settings.ragflow_score_threshold:
-            continue
+    for entry in fused:
+        r = entry["row"]
+        if entry["source"] == "dense":
+            dist = float(r.get("distance") or 1.0)
+            sim = max(0.0, 1.0 - dist)
+            if sim < settings.ragflow_score_threshold:
+                # Dense leg below threshold — keep if BM25 also matched.
+                if entry["matched"] == 1:
+                    pass  # fall through and emit with bm25_score
+                else:
+                    continue
+            score = sim
+        else:
+            score = float(r.get("bm25_score") or 0.0)
         hits.append(
             {
                 "chunk_id": r["chunk_id"],
@@ -297,12 +381,12 @@ async def retrieve(
                 "content": r["content"],
                 "snippet": r["snippet"],
                 "document_name": r["filename"],
-                "score": sim,
+                # Final score reported to the UI: dense sim if dense-side
+                # contributed, otherwise the bm25_score.
+                "score": score,
+                "match_source": entry["source"],
                 # Mirror `rag_retriever._format_citation` so the chat UI's
-                # `[doc: …]` regex can resolve to the chunk. Without
-                # this key the LLM-echoed markers fall through to the
-                # orphan branch (`<sup>?</sup>`) and become
-                # non-clickable.
+                # `[doc: …]` regex can resolve to the chunk.
                 "citation_key": f"{r['filename']} p.{r['page'] or '?'} ¶{r['para'] or '?'}",
             }
         )
@@ -310,20 +394,99 @@ async def retrieve(
     if not hits:
         return []
 
-    # 4. Optional rerank via GLM rerank.
-    if settings.zhipuai_rerank_enabled and zhipuai_embed.is_configured():
-        docs = [h["content"][:2000] for h in hits]
-        try:
-            ranked = await zhipuai_embed.rerank(query, docs, top_n=top_n or settings.ragflow_top_n_after_rerank)
-            out: list[dict[str, Any]] = []
-            for entry in ranked:
-                idx = int(entry["index"])
-                if 0 <= idx < len(hits):
-                    h = dict(hits[idx])
-                    h["score"] = float(entry["score"])
-                    out.append(h)
-            return out
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("rerank failed: %s; using vector ordering", exc)
+    # 6. Cap to top_n (the fused RRF ordering IS the final ordering;
+    #    we dropped the GLM rerank layer because it was promoting
+    #    semantically-similar chunks over exact-term hits like
+    #    "Referral to SPC / Treaty is required").
+    hits = hits[: top_n or settings.ragflow_top_n_after_rerank]
 
-    return hits[: top_n or settings.ragflow_top_n_after_rerank]
+    # 6.5. Sentence-window: stitch neighbouring blocks around each
+    #      hit so the LLM sees the paragraph, not just the line. The
+    #      bbox / citation_key / match_source all stay tied to the
+    #      original hit — only `content` (what the LLM actually reads)
+    #      is expanded. PDF highlights in the chat UI therefore stay
+    #      precise on the original paragraph.
+    if settings.rag_window_size > 0:
+        from app.services.sentence_window import (
+            fetch_window as _fetch_window,
+            stitch_text as _stitch_text,
+        )
+        for hit in hits:
+            if not hit.get("kb_doc_id") or not hit.get("page"):
+                continue
+            siblings = await _fetch_window(
+                session,
+                kb_doc_id=hit["kb_doc_id"],
+                page=hit["page"],
+                para=hit.get("para"),
+                window=settings.rag_window_size,
+            )
+            if len(siblings) <= 1:
+                # Either no siblings found, or only the hit itself —
+                # nothing to stitch.
+                hit["window_size"] = len(siblings)
+                continue
+            hit["content"] = _stitch_text(siblings)
+            hit["window_size"] = len(siblings)
+
+    return hits
+
+
+def _reciprocal_rank_fusion(
+    dense_rows: list,
+    bm25_rows: list,
+    *,
+    k: int = 60,
+) -> list[dict[str, Any]]:
+    """Reciprocal Rank Fusion (Cormack et al., 2009).
+
+    Each list contributes ``1 / (k + rank_in_list)`` for every item;
+    the same chunk appearing in both lists gets *both* contributions
+    summed. We then re-sort by total RRF score (descending).
+
+    `k` is a smoothing constant — the standard recommendation is 60.
+    Larger `k` dampens the top-rank advantage; smaller `k` amplifies it.
+    We expose `settings.rag_rrf_k` for ops to tune without code.
+
+    Returns a list of dicts:
+        [{ "chunk_id": int, "row": <SQLAlchemy mapping>, "source":
+           "dense"|"bm25"|"both", "matched": 1|2, "rrf_score": float }, ...]
+    sorted by `rrf_score` desc.
+    """
+    scores: dict[int, float] = {}
+    payload: dict[int, dict] = {}
+    src: dict[int, set[str]] = {}
+    for rank, row in enumerate(dense_rows, start=1):
+        cid = int(row["chunk_id"])
+        scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+        # Prefer the dense-side row (it has `bbox` / `content`
+        # identical to bm25, but the dense SELECT returns more cols).
+        payload.setdefault(cid, row)
+        src.setdefault(cid, set()).add("dense")
+    for rank, row in enumerate(bm25_rows, start=1):
+        cid = int(row["chunk_id"])
+        scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+        # If the chunk is already in `payload` (from dense), keep the
+        # dense row — they have the same chunk metadata anyway.
+        payload.setdefault(cid, row)
+        src.setdefault(cid, set()).add("bm25")
+    out: list[dict[str, Any]] = []
+    for cid, total in scores.items():
+        legs = src[cid]
+        if len(legs) == 2:
+            source = "both"
+        elif "dense" in legs:
+            source = "dense"
+        else:
+            source = "bm25"
+        out.append(
+            {
+                "chunk_id": cid,
+                "row": payload[cid],
+                "source": source,
+                "matched": len(legs),
+                "rrf_score": total,
+            }
+        )
+    out.sort(key=lambda x: -x["rrf_score"])
+    return out

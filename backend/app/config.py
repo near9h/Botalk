@@ -81,7 +81,9 @@ class Settings(BaseSettings):
     rag_enabled: bool = True
     # Number of chunks to retrieve per bot turn before rerank.
     ragflow_top_k: int = 12
-    # Number of chunks kept after rerank → injected into the prompt.
+    # Number of chunks kept after the (now removed) rerank layer →
+    # injected into the prompt. Hybrid (dense + BM25 + RRF) ordering
+    # already promotes exact-term hits, so a small top_n is enough.
     ragflow_top_n_after_rerank: int = 5
     # Cosine-similarity threshold (0-1). Hits below this are dropped
     # before rerank. Higher = fewer but more relevant chunks.
@@ -101,9 +103,34 @@ class Settings(BaseSettings):
     zhipuai_embedding_dim: int = 2048
     # Rerank endpoint — "rerank" set to the model id on RAG/Paas.
     zhipuai_rerank_model: str = "rerank"
-    # When False, skip rerank and rank by vector similarity only.
-    # Useful during dev when GLM rerank quota is exhausted.
-    zhipuai_rerank_enabled: bool = True
+    # When False, skip rerank and use the hybrid (dense + BM25 + RRF)
+    # ordering directly. Useful during dev when GLM rerank quota is
+    # exhausted; also the default now since the rerank layer was
+    # observed to drop exact-term hits (e.g. "Referral to SPC / Treaty")
+    # in favour of semantically-similar chunks.
+    zhipuai_rerank_enabled: bool = False
+
+    # ─── Hybrid retrieval (BM25 + dense + RRF) ───
+    # When True, run a parallel full-text-search leg via Postgres
+    # `tsvector @@ tsquery` and fuse the ranked lists with Reciprocal
+    # Rank Fusion. Setting False degrades to the legacy dense-only
+    # path (used as a kill switch when something goes wrong).
+    rag_hybrid_enabled: bool = True
+    # Per-leg candidate cap. Picked conservatively so the rerank step
+    # still has a meaningful top-N to chew on.
+    rag_top_k_dense: int = 50
+    rag_top_k_bm25: int = 50
+    # RRF smoothing constant. 60 is the Cormack-et-al default; tune via
+    # A/B if precision@5 starts dropping on a curated eval set.
+    rag_rrf_k: int = 60
+    # Sentence-window: how many neighbouring blocks (by `para`) to
+    # stitch around each retrieval hit before injecting into the LLM
+    # prompt. 0 disables the feature (legacy behaviour). 1 means the
+    # LLM sees the previous block + the hit + the next block on the
+    # same page — enough context for short legal/insurance clauses
+    # without bloating the prompt. Larger values give the model more
+    # surrounding text at the cost of tokens.
+    rag_window_size: int = 1
 
     @property
     def cors_origin_list(self) -> list[str]:

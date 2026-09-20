@@ -449,6 +449,15 @@ class KbChunk(Base):
     # retriever uses raw SQL with parameterized vectors.
     embedding: Mapped[Any | None] = mapped_column(Text, nullable=True)
     embedding_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # tsvector generated column for hybrid (BM25) retrieval. Populated
+    # by Postgres on every text UPDATE — the application layer never
+    # writes this column directly. Read-only access via raw SQL in
+    # `local_retriever.retrieve`. We declare it as nullable Text here
+    # (instead of `TSVECTOR`) so SQLAlchemy doesn't need to know about
+    # the pgvector companion type — the migration's
+    # `ALTER COLUMN ... TYPE tsvector USING to_tsvector(...)` rewrites
+    # the underlying storage to tsvector at upgrade time.
+    tsv: Mapped[Any | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )
