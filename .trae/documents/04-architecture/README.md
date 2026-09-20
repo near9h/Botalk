@@ -6,18 +6,18 @@
 
 ## 1. 系统总览（Mermaid）
 
-完整架构图见 [system-architecture.md](system-architecture.md)；下面是简化版（一眼看容器）：
+完整架构图见 [system-architecture.md](system-architecture.md)；下面是简化版（一眼看容器 + 版本）：
 
 ```mermaid
 flowchart LR
-    Browser["浏览器"]
-    Nginx["Nginx :3500"]
-    Frontend["Next.js :3000"]
-    Backend["FastAPI :8000"]
-    PG["Postgres+pgvector :5432"]
-    NewAPI["NewAPI :5000"]
-    Zhipu["智谱 GLM<br/>(embedding)"]
-    MinerU["MinerU<br/>(PDF 解析)"]
+    Browser["浏览器<br/>Next.js 14.2.15"]
+    Nginx["Nginx 1.27.5<br/>:3500"]
+    Frontend["Next.js 14.2.15<br/>node 20.20.2 :3000"]
+    Backend["FastAPI 0.141.1<br/>Python 3.11.16 :8000"]
+    PG["Postgres 16.15<br/>+ pgvector 0.8.6 :5432"]
+    NewAPI["NewAPI :5000<br/>calciumion/new-api:latest"]
+    Zhipu["智谱 GLM<br/>embedding-3"]
+    MinerU["MinerU Cloud API v4"]
 
     Browser --> Nginx
     Nginx -- "/ (静态)" --> Frontend
@@ -26,7 +26,6 @@ flowchart LR
     Backend --> NewAPI
     Backend --> Zhipu
     Backend --> MinerU
-    MinerU --> Zhipu
 ```
 
 ---
@@ -59,19 +58,22 @@ flowchart LR
 
 详见 [08-deployment/README.md](../08-deployment/README.md)。
 
-容器清单（docker-compose.yml 同步维护）：
+容器清单（docker-compose.yml 同步维护；版本以生产容器实跑为准）：
 
-| 服务 | 镜像 | 端口 | 说明 |
-| --- | --- | --- | --- |
-| frontend | 自建 Next.js | 3000 (内) | 由 Nginx 反代 |
-| backend | 自建 FastAPI | 8000 (内) | 仅内网 |
-| nginx | nginx:1.27 | 3500 (外) | stream 同时承载 HTTP/HTTPS |
-| postgres | pgvector/pg16 | 5432 (内) | 持久化 |
-| new-api | calciumion/new-api | 5000 (内) | OpenAI 兼容 LLM 网关 |
+| 服务 | 镜像 | 跑版本 | 端口 | 说明 |
+| --- | --- | --- | --- | --- |
+| frontend | `node:20-alpine` 自建 | Next.js **14.2.15** · node **20.20.2** | 3000 (内) | 由 Nginx 反代 |
+| backend | `python:3.11-slim` 自建 | Python **3.11.16** · FastAPI **0.141.1** · LibreOffice **25.2.3.2** | 8000 (内) | 仅内网 |
+| nginx | `nginx:1.27-alpine` | nginx **1.27.5** | 3500 (外) | stream 同时承载 HTTP/HTTPS |
+| postgres | `pgvector/pgvector:pg16` | PostgreSQL **16.15** · pgvector **0.8.6** · Alembic head `0021_hybrid_search_bm25` | 5432 (内) | 持久化 + 向量 |
+| new-api | `calciumion/new-api:latest` | （浮动，业务侧） | 5000 (内) | OpenAI 兼容 LLM 网关 |
 
 ---
 
-## 5. 数据架构（PostgreSQL）
+## 5. 数据架构（PostgreSQL 16.15 + pgvector 0.8.6）
+
+> 当前 Alembic head: `0021_hybrid_search_bm25`（截至 2026-09-20）。
+> 查看：`docker exec botgroup-postgres psql -U botgroup -d botgroup -tAc "SELECT version_num FROM alembic_version;"`
 
 关键表（详见 [`backend/app/db/models.py`](../../backend/app/db/models.py)）：
 

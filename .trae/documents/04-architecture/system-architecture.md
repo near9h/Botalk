@@ -10,10 +10,10 @@
 ```mermaid
 flowchart TB
     %% ──────── 公网 ────────
-    Browser["公网用户浏览器<br/>Next.js SPA + EventSource"]
+    Browser["公网用户浏览器<br/>Next.js 14.2.15 / React 18.3.1<br/>+ EventSource"]
 
     %% ──────── Nginx ────────
-    subgraph NGINX["Nginx (botgroup-nginx)"]
+    subgraph NGINX["Nginx 1.27.5 (botgroup-nginx)<br/>alpine · :3500 对外"]
         direction TB
         NStream["stream :3500<br/>嗅探 0x16 → TLS 终结"]
         NHttp["http :3501 / :3500+tls<br/>proxy_protocol → frontend / backend"]
@@ -23,20 +23,20 @@ flowchart TB
     %% ──────── 应用层 ────────
     subgraph APP["应用层 (内网)"]
         direction TB
-        Frontend["Frontend · Next.js<br/>:3000<br/>App Router / components / lib"]
-        Backend["Backend · FastAPI<br/>:8000<br/>api/* + services/* + orchestrator + workers"]
+        Frontend["Frontend · Next.js 14.2.15<br/>node 20.20.2 / :3000<br/>App Router / components / lib"]
+        Backend["Backend · FastAPI 0.141.1<br/>Python 3.11.16 / :8000<br/>api/* + services/* + orchestrator + workers<br/>+ LibreOffice 25.2.3.2"]
     end
 
     %% ──────── 存储 / 外部 ────────
     subgraph DEPS["存储 / 外部依赖"]
         direction LR
-        Postgres["Postgres 16 + pgvector<br/>:5432<br/>持久化 + 向量"]
-        NewAPI["NewAPI<br/>:5000<br/>OpenAI 兼容 LLM 网关"]
-        MinerU["MinerU<br/>PDF 解析"]
-        Zhipu["智谱 GLM<br/>embedding API"]
+        Postgres["Postgres 16.15<br/>+ pgvector 0.8.6<br/>:5432<br/>持久化 + 向量"]
+        NewAPI["NewAPI<br/>calciumion/new-api:latest<br/>:5000<br/>OpenAI 兼容 LLM 网关"]
+        MinerU["MinerU Cloud API v4<br/>https://mineru.net/api/v4<br/>PDF 解析"]
+        Zhipu["智谱 GLM API<br/>embedding-3 (2048d)<br/>+ rerank"]
     end
 
-    Upstream["上游模型<br/>gpt-4o / claude / gemini / agnes / MiniMax-M3"]
+    Upstream["上游模型<br/>gpt-4o / claude-3.5 / gemini-2.5 / agnes / MiniMax-M3"]
 
     %% ──────── 连接 ────────
     Browser -- "HTTPS :3500" --> NStream

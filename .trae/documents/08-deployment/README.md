@@ -17,19 +17,39 @@ docker compose logs -f backend   # 等 alembic upgrade head 完成
 
 ---
 
-## 2. 镜像清单
+## 2. 镜像清单（生产实跑版本）
 
-| 服务 | Dockerfile | 依赖 |
-| --- | --- | --- |
-| frontend | `frontend/Dockerfile` | Next.js 14 |
-| backend | `backend/Dockerfile` | Python 3.11 + FastAPI + Alembic |
-| nginx | `nginx/Dockerfile` | nginx:1.27 + 自定义 stream 路由 |
-| postgres | pgvector/pg16（外部镜像） | — |
+> 版本以**当前生产容器**实跑为准；
+> 与 [04-architecture/middleware-inventory.md § 1–2](../04-architecture/middleware-inventory.md) 同步维护。
+
+| 服务 | Dockerfile | 基础镜像 | 跑版本 | 用途 |
+| --- | --- | --- | --- | --- |
+| frontend | [`frontend/Dockerfile`](../../frontend/Dockerfile) | `node:20-alpine` | Node.js **20.20.2** · Next.js **14.2.15** · React **18.3.1** | SPA + 流式渲染 |
+| backend | [`backend/Dockerfile`](../../backend/Dockerfile) | `python:3.11-slim` (Debian 12 bookworm) | Python **3.11.16** · FastAPI **0.141.1** · Alembic **1.20.0** · SQLAlchemy **2.0.54** · asyncpg **0.31.0** · LibreOffice **25.2.3.2** | API + 编排 + 文档解析 |
+| nginx | [`nginx/Dockerfile`](../../nginx/Dockerfile) | `nginx:1.27-alpine` | nginx **1.27.5** | 反代 + TLS 终结 + stream-routing |
+| postgres | `docker-compose.yml` | `pgvector/pgvector:pg16` | PostgreSQL **16.15** · pgvector **0.8.6** · Alembic head `0021_hybrid_search_bm25` | 持久化 + 向量 |
+| new-api | `docker-compose.yml` | `calciumion/new-api:latest` | （浮动，业务侧容器） | OpenAI 兼容 LLM 网关 |
+
+### 主要 Python / 前端库版本（详见 [04-architecture/middleware-inventory.md § 5–6](../04-architecture/middleware-inventory.md)）
+
+| 库 | 版本 | 库 | 版本 |
+| --- | --- | --- | --- |
+| fastapi | 0.141.1 | next | 14.2.15 |
+| sqlalchemy | 2.0.54 | react / react-dom | 18.3.1 |
+| alembic | 1.20.0 | typescript | 5.5.3 |
+| asyncpg | 0.31.0 | pdfjs-dist | 4.7.76 |
+| pgvector | 0.8.6 | markdown-it | 14.1.0 |
+| pydantic | 2.13.5 | | |
+| bcrypt | 5.0.0 | | |
+| PyJWT | 2.14.0 | | |
+| httpx | 0.28.1 | | |
+| openai | 3.16.2 | | |
+| markdown-it-py | 4.2.0 | | |
 
 外部依赖（必须先就绪）：
 
 - `new-api`（钙离子钙离子 / OpenAI 兼容网关）：URL + Key 在 `.env`
-- `postgres`：自托管 pgvector 镜像
+- `postgres`：自托管 pgvector 镜像（已含 pgvector 扩展 0.8.6）
 
 ---
 

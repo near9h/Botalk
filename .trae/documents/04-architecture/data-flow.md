@@ -341,13 +341,14 @@ flowchart LR
 sequenceDiagram
     autonumber
     actor U as 用户
-    participant B as Browser<br/>(EventSource)
-    participant N as Nginx :3500
-    participant API as Backend :8000<br/>(chat.py)
+    participant B as Browser<br/>Next.js 14.2.15<br/>(EventSource)
+    participant N as Nginx 1.27.5<br/>:3500
+    participant API as Backend 0.141.1<br/>Python 3.11.16 :8000<br/>(chat.py)
     participant MS as msghub<br/>(orchestrator)
-    participant LR as local_retriever<br/>(pgvector+BM25)
-    participant NA as NewAPI :5000
-    participant DB as Postgres
+    participant LR as local_retriever<br/>(pgvector 0.8.6 + BM25)
+    participant NA as NewAPI<br/>calciumion/new-api:latest :5000
+    participant DB as Postgres 16.15<br/>+ pgvector 0.8.6
+    participant Z as 智谱 GLM<br/>embedding-3
 
     U->>B: 在 group 输入 prompt
     B->>N: EventSource /api/chat/stream
@@ -358,6 +359,8 @@ sequenceDiagram
     loop 每个 bot 轮次
         MS->>MS: language_detect → "zh"
         MS->>LR: retrieve_for_bot(bot_id, query)
+        LR->>Z: 必要时 embed query
+        Z-->>LR: vector
         LR->>DB: SELECT ... FROM kb_chunks<br/>(pgvector cosine + BM25)
         DB-->>LR: top-5 chunks
         LR-->>MS: chunks + context_block
@@ -365,7 +368,7 @@ sequenceDiagram
         NA->>NA: 路由到上游模型<br/>(gpt-4o / claude / ...)
         NA-->>MS: 流式 token
         MS-->>B: SSE event: message
-        MS->>DB: 落 messages + audit_log
+        MS->>DB: 落 messages + audit_logs
         MS->>B: SSE event: citation (snippet)
     end
 
