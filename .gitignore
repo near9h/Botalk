@@ -14,5 +14,7 @@ data/
 .ruff_cache/
 .mypy_cache/
 
-# Trae workspace (state, scratch, plans)
-.trae/
+# Trae workspace (state, scratch, plans); keep .trae/documents/ tracked
+# because it holds the project audit / PMP artefacts (see 01-initiation).
+.trae/*
+!.trae/documents/
