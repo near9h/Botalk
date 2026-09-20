@@ -4,11 +4,12 @@ import Link from "next/link";
 import { useState } from "react";
 import { Avatar, avatarColor, Badge } from "./ui";
 import { Bot, Group } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 
-const MODE_LABEL: Record<Group["mode"], { label: string; variant: "auto" | "manual" | "round_robin" }> = {
-  auto: { label: "Auto · 群内轮流", variant: "auto" },
-  manual: { label: "Manual · @触发", variant: "manual" },
-  round_robin: { label: "Round Robin", variant: "round_robin" },
+const MODE_LABEL_KEY: Record<Group["mode"], { labelKey: string; variant: "auto" | "manual" | "round_robin" }> = {
+  auto: { labelKey: "group.mode.label.auto", variant: "auto" },
+  manual: { labelKey: "group.mode.label.manual", variant: "manual" },
+  round_robin: { labelKey: "group.mode.label.round_robin", variant: "round_robin" },
 };
 
 const GROUP_EMOJI = ["💬", "🧠", "📋", "🎨", "💼", "🔬", "🎯", "🌍", "📚", "🛠"];
@@ -28,9 +29,10 @@ export function GroupCard({
   bots: Bot[];
   onDelete?: () => void;
 }) {
+  const { t } = useI18n();
   const [hover, setHover] = useState(false);
   const memberBots = bots.filter((b) => group.bot_ids.includes(b.id));
-  const mode = MODE_LABEL[group.mode];
+  const mode = MODE_LABEL_KEY[group.mode];
   const emoji = pickEmoji(group.name, "💬");
 
   return (
@@ -72,9 +74,9 @@ export function GroupCard({
                 color: "var(--fg-subtle)",
                 marginBottom: 4,
               }}
-              title={`由 ${group.owner_username} 创建`}
+              title={t("groupCard.byTitleFmt", { name: group.owner_username })}
             >
-              由 {group.owner_username} 创建
+              {t("groupCard.byFmt", { name: group.owner_username })}
             </div>
           )}
           {group.description ? (
@@ -92,15 +94,15 @@ export function GroupCard({
               {group.description}
             </div>
           ) : (
-            <div style={{ fontSize: 12, color: "var(--fg-subtle)" }}>暂无描述</div>
+            <div style={{ fontSize: 12, color: "var(--fg-subtle)" }}>{t("groupCard.noDescription")}</div>
           )}
         </div>
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
-        <Badge variant={mode.variant}>{mode.label}</Badge>
-        <Badge variant="info">最多 {group.max_rounds} 轮</Badge>
-        {group.scope === "system" && <Badge variant="info">系统共享</Badge>}
+        <Badge variant={mode.variant}>{t(mode.labelKey)}</Badge>
+        <Badge variant="info">{t("group.rounds", { n: group.max_rounds })}</Badge>
+        {group.scope === "system" && <Badge variant="info">{t("groups.systemScope")}</Badge>}
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -138,18 +140,18 @@ export function GroupCard({
             </div>
           )}
           {memberBots.length === 0 && (
-            <span style={{ fontSize: 12, color: "var(--fg-subtle)" }}>暂无成员</span>
+            <span style={{ fontSize: 12, color: "var(--fg-subtle)" }}>{t("groupCard.noMembers")}</span>
           )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>
-            {memberBots.length} 位成员
+            {t("groupCard.memberCountFmt", { n: memberBots.length })}
           </span>
           {onDelete && (
             <button
               onClick={(e) => {
                 e.preventDefault();
-                if (confirm(`删除群组「${group.name}」？此操作不可撤销。`)) onDelete();
+                if (confirm(t("groups.modal.deleteConfirm", { name: group.name }))) onDelete();
               }}
               style={{
                 fontSize: 14,
@@ -167,7 +169,7 @@ export function GroupCard({
                 (e.currentTarget as HTMLButtonElement).style.background = "transparent";
                 (e.currentTarget as HTMLButtonElement).style.color = "var(--fg-subtle)";
               }}
-              title="删除"
+              title={t("groups.delete")}
             >
               🗑
             </button>

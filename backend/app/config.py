@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     firecrawl_api_key: str = ""
     # MCP client timeout for connecting to / listing tools of remote servers.
     mcp_timeout_seconds: float = 30.0
+    # Security audit SS3: explicit allowlist of MCP server hostnames.
+    # IP literals in MCP URLs are auto-allowed when they are not
+    # private/loopback/link-local/reserved; hostnames here must be
+    # listed explicitly so a compromised admin can't SSRF into the
+    # botgroup backend itself or a peer service. Comma-separated in .env
+    # via `MCP_ALLOWED_HOSTS=foo.com,bar.io`.
+    mcp_allowed_hosts_raw: str = ""
     # Optional community skill-market registry URL. Empty disables the
     # `/api/skills/community/search` endpoint and hides search in the UI.
     skill_market_api_url: str = ""
@@ -135,6 +142,11 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def mcp_allowed_hosts(self) -> list[str]:
+        """Parse MCP_ALLOWED_HOSTS (comma-separated) into a list."""
+        return [h.strip() for h in self.mcp_allowed_hosts_raw.split(",") if h.strip()]
 
 
 _DEFAULT_SECRETS = frozenset({

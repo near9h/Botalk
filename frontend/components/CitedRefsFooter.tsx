@@ -14,6 +14,7 @@
 import { useMemo } from "react";
 import type { CitedRef } from "@/lib/api";
 import { resolveCitedChunks } from "@/lib/markdown";
+import { useI18n } from "@/lib/i18n";
 
 export function CitedRefsFooter({
   refs,
@@ -26,6 +27,8 @@ export function CitedRefsFooter({
   content: string;
   onOpen: (ref: CitedRef) => void;
 }) {
+  const { t } = useI18n();
+  const unknownLabel = t("citation.unknownSource");
   const cited = useMemo(
     () => resolveCitedChunks(content, refs),
     [content, refs],
@@ -75,7 +78,7 @@ export function CitedRefsFooter({
               }}
               title={ref.citation_key || ref.filename}
             >
-              {(ref.citation_key || ref.filename || "未知来源").replace(/\.pdf$/i, "")}
+              {(ref.citation_key || ref.filename || unknownLabel).replace(/\.pdf$/i, "")}
             </span>
           </span>
         ))}

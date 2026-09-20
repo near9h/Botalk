@@ -358,6 +358,12 @@ async def list_attachments(
 async def batch_attachment_meta(
     public_ids: list[str],
     session: AsyncSession = Depends(get_session),
+    # Fix for security audit item AC1: this endpoint was missing the
+    # `require_user` dependency, so unauthenticated callers could probe
+    # attachment metadata. Even though only public_ids (not enum-able
+    # ints) are accepted, anonymous metadata reads are not part of the
+    # intended threat model.
+    user: User = Depends(require_user),
 ) -> list[dict]:
     """Return lightweight metadata (no content) for a list of attachment public_ids.
 

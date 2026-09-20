@@ -26,6 +26,7 @@
  * `import('pdfjs-dist')` inside `useEffect`).
  */
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "@/lib/i18n";
 
 export type PdfHighlight = {
   /** 1-indexed page number (matches backend `kb_chunks.page`). */
@@ -68,6 +69,7 @@ export function PdfViewerWithBbox({
   title,
   onClose,
 }: Props) {
+  const { t } = useI18n();
   const [pdf, setPdf] = useState<PdfDoc | null>(null);
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [numPages, setNumPages] = useState<number>(0);
@@ -137,7 +139,7 @@ export function PdfViewerWithBbox({
       } catch (e) {
         if (!cancelled) {
           const msg = e instanceof Error ? e.message : String(e);
-          setError(msg || "PDF 加载失败");
+          setError(msg || t("pdf.loadFail"));
           setLoading(false);
         }
       }
@@ -185,7 +187,7 @@ export function PdfViewerWithBbox({
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        setError(msg || "PDF 渲染失败");
+        setError(msg || t("pdf.renderFail"));
       }
     })();
     return () => {
@@ -221,7 +223,7 @@ export function PdfViewerWithBbox({
             <button
               type="button"
               onClick={onClose}
-              aria-label="关闭"
+              aria-label={t("pdf.closeAria")}
               style={{
                 border: "1px solid var(--border)",
                 background: "var(--surface-2)",
@@ -258,7 +260,7 @@ export function PdfViewerWithBbox({
             textAlign: "center",
           }}
         >
-          正在加载原文…
+          {t("pdf.loadingSource")}
         </div>
       ) : (
         <>
@@ -280,7 +282,7 @@ export function PdfViewerWithBbox({
               ←
             </button>
             <span style={{ fontFamily: '"JetBrains Mono", monospace' }}>
-              第 {pageNumber} / {numPages || "?"} 页
+              {t("pdf.pageOfFmt", { a: pageNumber, b: numPages || "?" })}
             </span>
             <button
               type="button"
@@ -303,7 +305,7 @@ export function PdfViewerWithBbox({
                   fontSize: 11,
                 }}
               >
-                {highlightsOnPage.length} 处高亮
+                {t("pdf.highlightsFmt", { n: highlightsOnPage.length })}
               </span>
             )}
           </div>

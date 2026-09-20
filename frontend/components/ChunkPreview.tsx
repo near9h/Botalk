@@ -27,6 +27,7 @@ import { useEffect, useState } from "react";
 import type { KbChunk } from "@/lib/api";
 import { isPreviewableSource, kbDocumentPreviewUrl } from "@/lib/api";
 import { PdfViewerWithBbox, type PdfHighlight } from "./PdfViewerWithBbox";
+import { useI18n } from "@/lib/i18n";
 
 export function ChunkPreview({
   chunks,
@@ -39,6 +40,7 @@ export function ChunkPreview({
   kbDocId: number;
   filename: string;
 }) {
+  const { t } = useI18n();
   const [active, setActive] = useState<KbChunk | null>(null);
   if (!chunks || chunks.length === 0) {
     return (
@@ -52,7 +54,7 @@ export function ChunkPreview({
           borderRadius: 8,
         }}
       >
-        暂无 chunk（可能尚未完成解析）
+        {t("chunk.empty")}
       </div>
     );
   }
@@ -113,7 +115,7 @@ export function ChunkPreview({
                 }}
                 title={c.snippet}
               >
-                {c.snippet || "（无内容）"}
+                {c.snippet || t("chunk.emptySnippet")}
               </div>
               <button
                 type="button"
@@ -121,8 +123,8 @@ export function ChunkPreview({
                   e.stopPropagation();
                   setActive(c);
                 }}
-                title={hasBbox ? "在 PDF 中定位" : "查看 chunk 详情"}
-                aria-label="预览"
+                title={hasBbox ? t("chunk.titleWithBbox") : t("chunk.titleWithoutBbox")}
+                aria-label={t("chunk.previewButtonAria")}
                 style={{
                   width: 30,
                   height: 30,
@@ -179,6 +181,7 @@ function ChunkPreviewModal({
   filename: string;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const bbox = (chunk.bbox_json as [number, number, number, number] | null) ?? null;
 
   // Esc closes the modal.
@@ -214,7 +217,7 @@ function ChunkPreviewModal({
       />
       <div
         role="dialog"
-        aria-label="Chunk 预览"
+        aria-label={t("chunk.title")}
         style={{
           position: "fixed",
           inset: "5vh 5vw",
@@ -239,8 +242,13 @@ function ChunkPreviewModal({
           }}
         >
           <div>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>
-              🧩 Chunk #{chunk.id}
+            <div
+              style={{
+                fontSize: 14,
+                fontWeight: 600,
+              }}
+            >
+              {t("chunk.title", { id: chunk.id })}
             </div>
             <div
               style={{
@@ -250,15 +258,15 @@ function ChunkPreviewModal({
               }}
             >
               📄 {filename}
-              {chunk.page != null ? ` · 第 ${chunk.page} 页` : ""}
-              {chunk.para != null ? ` · 段落 ${chunk.para}` : ""}
-              {!bbox && chunk.page != null ? " · 无 bbox（按页定位）" : ""}
+              {chunk.page != null ? ` · ${t("chunk.pageFmt", { n: chunk.page })}` : ""}
+              {chunk.para != null ? ` · ${t("chunk.paraFmt", { n: chunk.para })}` : ""}
+              {!bbox && chunk.page != null ? ` · ${t("chunk.noBbox")}` : ""}
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="关闭"
+            aria-label={t("chunk.aria.close")}
             style={{
               border: "1px solid var(--border)",
               background: "var(--surface)",
@@ -301,7 +309,7 @@ function ChunkPreviewModal({
                   textAlign: "center",
                 }}
               >
-                暂不支持在线预览该格式（{filename.split(".").pop() || "未知"}）。
+                {t("chunk.unsupportedFmt", { ext: filename.split(".").pop() || t("chunk.unknownExt") })}
               </div>
             ) : (
               <PdfViewerWithBbox
@@ -332,7 +340,7 @@ function ChunkPreviewModal({
                 background: "var(--surface-2)",
               }}
             >
-              chunk 内容
+              {t("chunk.bodyHeading")}
             </div>
             <div
               style={{
@@ -345,7 +353,7 @@ function ChunkPreviewModal({
                 flex: 1,
               }}
             >
-              {chunk.snippet || "（无内容）"}
+              {chunk.snippet || t("chunk.emptySnippet")}
             </div>
             {bbox && (
               <div
@@ -357,9 +365,7 @@ function ChunkPreviewModal({
                   background: "var(--surface-2)",
                 }}
               >
-                bbox (PDF user-space)：[
-                {bbox.map((n) => n.toFixed(1)).join(", ")}
-                ]
+                {t("chunk.bboxHintFmt", { coords: bbox.map((n) => n.toFixed(1)).join(", ") })}
               </div>
             )}
           </div>

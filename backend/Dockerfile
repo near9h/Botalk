@@ -43,7 +43,10 @@ COPY pyproject.toml ./
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Install deps in a separate layer for better caching.
+# Install deps in a separate layer for better caching. PyPI mirrors
+# (configured in /etc/pip/pip.conf above) are fast enough; we don't
+# vendor wheels because they're build artefacts and would only bloat
+# the git history without changing the resulting image.
 RUN pip install --upgrade pip setuptools wheel && \
     pip install -e .
 

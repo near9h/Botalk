@@ -31,9 +31,11 @@ import {
 } from "@/components/ui";
 import { PageShell } from "@/components/Sidebar";
 import { api, KnowledgeBase } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 
 export default function KnowledgePage() {
   const toast = useToast();
+  const { t } = useI18n();
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -64,7 +66,7 @@ export default function KnowledgePage() {
       setKbs(list);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "加载知识库失败", description: msg, variant: "error" });
+      toast.push({ title: t("kb.toast.loadFail"), description: msg, variant: "error" });
     } finally {
       setLoading(false);
     }
@@ -78,7 +80,7 @@ export default function KnowledgePage() {
     setErrors({});
     const cleanName = name.trim();
     if (!cleanName) {
-      setErrors({ name: "请填写名称" });
+      setErrors({ name: t("kb.form.err.nameRequired") });
       return;
     }
     setSaving(true);
@@ -89,8 +91,8 @@ export default function KnowledgePage() {
         is_public: isPublic,
       });
       toast.push({
-        title: "已创建",
-        description: `知识库「${kb.name}」已就绪`,
+        title: t("common.toast.created"),
+        description: t("kb.toast.createdFmt", { name: kb.name }),
         variant: "success",
       });
       setName("");
@@ -107,20 +109,20 @@ export default function KnowledgePage() {
   };
 
   const onDelete = async (kb: KnowledgeBase) => {
-    if (!confirm(`确认删除「${kb.name}」？所有文档与 chunks 都会一并删除。`)) {
+    if (!confirm(t("kb.deleteConfirmFmt", { name: kb.name }))) {
       return;
     }
     try {
       await api.deleteKb(kb.public_id);
       toast.push({
-        title: "已删除",
-        description: `知识库「${kb.name}」已移除`,
+        title: t("common.toast.deleted"),
+        description: t("kb.toast.deletedFmt", { name: kb.name }),
         variant: "success",
       });
       await refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "删除失败", description: msg, variant: "error" });
+      toast.push({ title: t("kb.toast.deleteFail"), description: msg, variant: "error" });
     }
   };
 
@@ -144,7 +146,7 @@ export default function KnowledgePage() {
     if (!editingId) return;
     const cleanName = editForm.name.trim();
     if (!cleanName) {
-      setEditError("名称不能为空");
+      setEditError(t("kb.form.err.nameBlank"));
       return;
     }
     setEditSaving(true);
@@ -158,8 +160,8 @@ export default function KnowledgePage() {
         is_public: editForm.is_public,
       });
       toast.push({
-        title: "已保存",
-        description: `知识库「${updated.name}」已更新`,
+        title: t("common.toast.saved"),
+        description: t("kb.toast.savedFmt", { name: updated.name }),
         variant: "success",
       });
       cancelEdit();
@@ -196,12 +198,12 @@ export default function KnowledgePage() {
                 marginBottom: 6,
               }}
             >
-              知识库
+              {t("kb.title")}
             </h1>
             <p style={{ color: "var(--fg-muted)", fontSize: 14 }}>
               {kbs.length > 0
-                ? `共 ${kbs.length} 个知识库 · 上传 PDF / Word / Excel 后即可挂载到机器人`
-                : "上传文档，关联到机器人，让它们在群聊里引用你的资料"}
+                ? t("kb.subtitle_countFmt", { n: kbs.length })
+                : t("kb.subtitle_empty")}
             </p>
           </div>
           <Button
@@ -209,7 +211,7 @@ export default function KnowledgePage() {
             size="lg"
           >
             <span style={{ fontSize: 16, marginRight: 4 }}>＋</span>
-            新建知识库
+            {t("kb.action.new")}
           </Button>
         </div>
 
@@ -222,16 +224,16 @@ export default function KnowledgePage() {
             }}
           >
             <div style={{ fontSize: 28, marginBottom: 8 }}>⏳</div>
-            加载中…
+            {t("common.loading")}
           </div>
         ) : sorted.length === 0 ? (
           <EmptyState
             emoji="📚"
-            title="还没有知识库"
-            description="新建一个知识库，往里面上传 PDF / Word / Excel，再挂载到机器人。"
+            title={t("kb.empty.title")}
+            description={t("kb.empty.desc")}
             action={
               <Button onClick={() => setCreating(true)} size="lg">
-                ＋ 创建第一个知识库
+                {t("kb.empty.cta")}
               </Button>
             }
           />
@@ -282,7 +284,7 @@ export default function KnowledgePage() {
                         color: "#166534",
                       }}
                     >
-                      公开
+                      {t("kb.publicBadge")}
                     </span>
                   )}
                 </Link>
@@ -294,7 +296,7 @@ export default function KnowledgePage() {
                     minHeight: 32,
                   }}
                 >
-                  {k.description || "（无描述）"}
+                  {k.description || t("kb.noDescription")}
                 </div>
                 <div
                   style={{
@@ -308,8 +310,8 @@ export default function KnowledgePage() {
                 >
                   <span>
                     {(k.ready_doc_count ?? 0) > 0
-                      ? "本地检索就绪"
-                      : "本地检索尚未就绪（等待首次上传）"}
+                      ? t("kb.ready")
+                      : t("kb.notReadyFmt")}
                   </span>
                   <div style={{ display: "flex", gap: 6 }}>
                     <button
@@ -328,9 +330,9 @@ export default function KnowledgePage() {
                         fontSize: 11,
                         color: "var(--fg)",
                       }}
-                      title="修改知识库名称、描述、可见性"
+                      title={t("kb.action.editTitle")}
                     >
-                      编辑
+                      {t("kb.action.edit")}
                     </button>
                     <button
                       type="button"
@@ -348,9 +350,9 @@ export default function KnowledgePage() {
                         fontSize: 11,
                         color: "var(--danger)",
                       }}
-                      title="删除整个知识库"
+                      title={t("kb.action.deleteTitle")}
                     >
-                      删除
+                      {t("kb.action.delete")}
                     </button>
                   </div>
                 </div>
@@ -363,8 +365,8 @@ export default function KnowledgePage() {
       <Dialog open={creating} onOpenChange={setCreating}>
         <DialogContent>
           <DialogHeader
-            title="新建知识库"
-            description="起一个名字 + 写几句描述，之后可以上传文档、挂载到机器人"
+            title={t("kb.form.title.new")}
+            description={t("kb.form.desc.new")}
             onClose={() => setCreating(false)}
           />
           <div
@@ -376,11 +378,11 @@ export default function KnowledgePage() {
             }}
           >
             <div>
-              <Label>名称</Label>
+              <Label>{t("kb.form.label.name")}</Label>
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="如：财务报销制度 / 项目模板"
+                placeholder={t("kb.form.name.placeholder")}
                 maxLength={128}
               />
               {errors.name && (
@@ -390,12 +392,12 @@ export default function KnowledgePage() {
               )}
             </div>
             <div>
-              <Label>描述（可选）</Label>
+              <Label>{t("kb.form.label.desc")}</Label>
               <Textarea
                 rows={3}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="让协作者知道这个知识库装的是什么"
+                placeholder={t("kb.form.desc.placeholder")}
                 maxLength={512}
               />
             </div>
@@ -421,7 +423,7 @@ export default function KnowledgePage() {
               />
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>
-                  🌍 公开给所有用户挂载
+                  {t("kb.form.share.title")}
                 </div>
                 <div
                   style={{
@@ -431,8 +433,7 @@ export default function KnowledgePage() {
                     marginTop: 2,
                   }}
                 >
-                  其它用户可以在他们的机器人上挂载这个知识库；
-                  但只有你（创建者）和管理员能修改或删除。
+                  {t("kb.form.share.desc")}
                 </div>
               </div>
             </label>
@@ -444,10 +445,10 @@ export default function KnowledgePage() {
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={() => setCreating(false)}>
-              取消
+              {t("kb.form.cancel")}
             </Button>
             <Button onClick={onCreate} disabled={saving}>
-              {saving ? "创建中…" : "创建"}
+              {saving ? t("kb.form.creating") : t("kb.form.create")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -461,8 +462,8 @@ export default function KnowledgePage() {
       >
         <DialogContent>
           <DialogHeader
-            title="编辑知识库"
-            description="修改名称、描述、可见性。改动对所有挂载的机器人立即生效。"
+            title={t("kb.form.title.edit")}
+            description={t("kb.form.desc.edit")}
             onClose={cancelEdit}
           />
           <div
@@ -474,13 +475,13 @@ export default function KnowledgePage() {
             }}
           >
             <div>
-              <Label>名称</Label>
+              <Label>{t("kb.form.label.name")}</Label>
               <Input
                 value={editForm.name}
                 onChange={(e) =>
                   setEditForm({ ...editForm, name: e.target.value })
                 }
-                placeholder="如：财务报销制度 / 项目模板"
+                placeholder={t("kb.form.name.placeholder")}
                 maxLength={128}
                 autoFocus
                 onKeyDown={(e) => {
@@ -492,14 +493,14 @@ export default function KnowledgePage() {
               />
             </div>
             <div>
-              <Label>描述（可选）</Label>
+              <Label>{t("kb.form.label.desc")}</Label>
               <Textarea
                 rows={3}
                 value={editForm.description}
                 onChange={(e) =>
                   setEditForm({ ...editForm, description: e.target.value })
                 }
-                placeholder="让协作者知道这个知识库装的是什么"
+                placeholder={t("kb.form.desc.placeholder")}
                 maxLength={512}
               />
             </div>
@@ -527,7 +528,7 @@ export default function KnowledgePage() {
               />
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>
-                  🌍 公开给所有用户挂载
+                  {t("kb.form.share.title")}
                 </div>
                 <div
                   style={{
@@ -537,8 +538,7 @@ export default function KnowledgePage() {
                     marginTop: 2,
                   }}
                 >
-                  其它用户可以在他们的机器人上挂载这个知识库；
-                  但只有你（创建者）和管理员能修改或删除。
+                  {t("kb.form.share.desc")}
                 </div>
               </div>
             </label>
@@ -550,10 +550,10 @@ export default function KnowledgePage() {
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={cancelEdit}>
-              取消
+              {t("kb.form.cancel")}
             </Button>
             <Button onClick={submitEdit} disabled={editSaving}>
-              {editSaving ? "保存中…" : "保存"}
+              {editSaving ? t("kb.form.saving") : t("kb.form.save")}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -126,8 +126,8 @@ export default function PoliciesAdminPage() {
         <div style={{ padding: 32 }}>
           <EmptyState
             emoji="🔒"
-            title="无权限"
-            description="只有管理员才能配置平台群规"
+            title={t("policy.noPerm.title")}
+            description={t("policy.noPerm.desc")}
           />
         </div>
       </PageShell>
@@ -365,7 +365,7 @@ export default function PoliciesAdminPage() {
                     <span
                       style={{ fontSize: 11, color: "var(--warning, #f59e0b)" }}
                     >
-                      ● 有未保存修改
+                      {t("policy.dirty")}
                     </span>
                   )}
                 </div>

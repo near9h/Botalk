@@ -24,13 +24,7 @@ import { PageShell } from "@/components/Sidebar";
 import { KbUploader } from "@/components/KbUploader";
 import { ChunkPreview } from "@/components/ChunkPreview";
 import { api, KbChunk, KbDocument, KnowledgeBase } from "@/lib/api";
-
-const STATUS_LABEL: Record<string, string> = {
-  pending: "排队中",
-  parsing: "解析中",
-  ready: "就绪",
-  failed: "失败",
-};
+import { useI18n } from "@/lib/i18n";
 
 const STATUS_COLOR: Record<string, { bg: string; fg: string }> = {
   pending: { bg: "rgba(148, 163, 184, 0.18)", fg: "#475569" },
@@ -44,10 +38,19 @@ export default function KnowledgeDetailPage({
 }: {
   params: { id: string };
 }) {
+  const { t } = useI18n();
   const kbId = params.id;
   const toast = useToast();
   const [kb, setKb] = useState<KnowledgeBase | null>(null);
   const [docs, setDocs] = useState<KbDocument[]>([]);
+  // Server-side pagination for the doc list. We only hold the current
+  // page locally, so refreshing fetches one slice at a time (default
+  // 20). The polling effect below tracks the same slice so the in-flight
+  // indicators (pending / parsing) stay live while the user pages
+  // through the rest of the KB.
+  const DOC_PAGE_SIZE = 20;
+  const [docPage, setDocPage] = useState(1);
+  const [docTotal, setDocTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [activeDocId, setActiveDocId] = useState<number | null>(null);
   const [chunks, setChunks] = useState<KbChunk[]>([]);
@@ -55,43 +58,51 @@ export default function KnowledgeDetailPage({
 
   const refresh = useCallback(async () => {
     if (!kbId) return;
+    const offset = (docPage - 1) * DOC_PAGE_SIZE;
     try {
-      const [kbRow, docList] = await Promise.all([
+      const [kbRow, docPageResp] = await Promise.all([
         api.getKb(kbId),
-        api.listKbDocuments(kbId),
+        api.listKbDocuments(kbId, { limit: DOC_PAGE_SIZE, offset }),
       ]);
       setKb(kbRow);
-      setDocs(docList);
+      setDocs(docPageResp.items);
+      setDocTotal(docPageResp.total);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "加载失败", description: msg, variant: "error" });
+      toast.push({ title: t("kb.detail.toast.loadFail"), description: msg, variant: "error" });
     } finally {
       setLoading(false);
     }
-  }, [kbId, toast]);
+  }, [kbId, toast, t, docPage]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  // Poll every 2s while any doc is in-flight. Stops automatically
-  // when everything is in a terminal state (ready / failed).
+  // Poll every 2s while any doc on the *current page* is in-flight.
+  // Stops automatically when everything on the page is in a terminal
+  // state (ready / failed). Pages where ingest has finished will simply
+  // not repoll; pages still uploading will refresh their slice.
   useEffect(() => {
     if (!docs.some((d) => d.status === "pending" || d.status === "parsing")) {
       return;
     }
-    const t = window.setInterval(() => {
+    const offset = (docPage - 1) * DOC_PAGE_SIZE;
+    const interval = window.setInterval(() => {
       void (async () => {
         try {
-          const docList = await api.listKbDocuments(kbId);
-          setDocs(docList);
+          const { items } = await api.listKbDocuments(kbId, {
+            limit: DOC_PAGE_SIZE,
+            offset,
+          });
+          setDocs(items);
         } catch {
           // swallow — toast already raised on initial load failure
         }
       })();
     }, 2000);
-    return () => window.clearInterval(t);
-  }, [docs, kbId]);
+    return () => window.clearInterval(interval);
+  }, [docs, kbId, docPage]);
 
   // Refresh the active chunk list whenever the user picks a different
   // doc, OR when the previously-picked doc's status flips to ready.
@@ -117,7 +128,7 @@ export default function KnowledgeDetailPage({
         if (!cancelled) {
           const msg = e instanceof Error ? e.message : String(e);
           toast.push({
-            title: "加载 chunk 失败",
+            title: t("kb.detail.toast.loadChunksFail"),
             description: msg,
             variant: "error",
           });
@@ -129,7 +140,7 @@ export default function KnowledgeDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [activeDocId, kbId, toast]);
+  }, [activeDocId, kbId, toast, t]);
 
   // Re-fetch the chunk list whenever the active doc's status flips to
   // ready — that's the moment the ingest worker stops writing new
@@ -159,33 +170,33 @@ export default function KnowledgeDetailPage({
   );
 
   const handleDeleteDoc = async (d: KbDocument) => {
-    if (!confirm(`确认删除「${d.filename}」？所有 chunks 会一并删除。`)) return;
+    if (!confirm(t("kb.detail.deleteConfirmFmt", { name: d.filename }))) return;
     try {
       await api.deleteKbDocument(kbId, d.id);
       toast.push({
-        title: "已删除",
-        description: `「${d.filename}」已移除`,
+        title: t("common.toast.deleted"),
+        description: t("kb.detail.deletedFmt", { name: d.filename }),
         variant: "success",
       });
       if (activeDocId === d.id) setActiveDocId(null);
       await refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "删除失败", description: msg, variant: "error" });
+      toast.push({ title: t("kb.detail.deleteFail"), description: msg, variant: "error" });
     }
   };
 
   if (!kbId) {
     return (
       <PageShell>
-        <div style={{ padding: 40 }}>无效的知识库 id</div>
+        <div style={{ padding: 40 }}>{t("kb.detail.invalidId")}</div>
       </PageShell>
     );
   }
   if (loading && !kb) {
     return (
       <PageShell>
-        <div style={{ padding: 40, color: "var(--fg-subtle)" }}>加载中…</div>
+        <div style={{ padding: 40, color: "var(--fg-subtle)" }}>{t("common.loading")}</div>
       </PageShell>
     );
   }
@@ -193,12 +204,12 @@ export default function KnowledgeDetailPage({
     return (
       <PageShell>
         <div style={{ padding: 40 }}>
-          <h2 style={{ marginBottom: 8 }}>未找到知识库</h2>
+          <h2 style={{ marginBottom: 8 }}>{t("kb.detail.notFound")}</h2>
           <Link
             href="/knowledge"
             style={{ color: "var(--accent)", textDecoration: "underline" }}
           >
-            返回列表
+            {t("kb.detail.back")}
           </Link>
         </div>
       </PageShell>
@@ -209,17 +220,17 @@ export default function KnowledgeDetailPage({
     <PageShell>
       <div style={{ padding: "32px 40px", margin: "0 auto", width: "100%" }}>
         <div style={{ marginBottom: 20 }}>
-          <Link
-            href="/knowledge"
-            style={{
-              fontSize: 12,
-              color: "var(--fg-subtle)",
-              textDecoration: "none",
-            }}
-          >
-            ← 返回知识库列表
-          </Link>
-        </div>
+        <Link
+          href="/knowledge"
+          style={{
+            fontSize: 12,
+            color: "var(--fg-subtle)",
+            textDecoration: "none",
+          }}
+        >
+          {t("kb.backToList")}
+        </Link>
+      </div>
         <div
           style={{
             display: "flex",
@@ -241,7 +252,7 @@ export default function KnowledgeDetailPage({
               {kb.name}
             </h1>
             <p style={{ color: "var(--fg-muted)", fontSize: 13 }}>
-              {kb.description || "（无描述）"}
+              {kb.description || t("kb.noDescription")}
             </p>
             <div
               style={{
@@ -261,13 +272,13 @@ export default function KnowledgeDetailPage({
                     color: "#166534",
                   }}
                 >
-                  公开
+                  {t("kb.publicBadge")}
                 </span>
               )}
               <span>
                 {docs.some((d) => d.status === "ready")
-                  ? "本地检索就绪"
-                  : "本地检索尚未就绪（等待首次上传）"}
+                  ? t("kb.ready")
+                  : t("kb.notReadyFmt")}
               </span>
             </div>
           </div>
@@ -294,7 +305,7 @@ export default function KnowledgeDetailPage({
                   gap: 6,
                 }}
               >
-                📄 文档 <span style={{ color: "var(--fg-subtle)" }}>{docs.length}</span>
+                {t("kb.detail.docsTitleFmt")} <span style={{ color: "var(--fg-subtle)" }}>{docTotal}</span>
               </div>
               <div
                 style={{
@@ -314,8 +325,8 @@ export default function KnowledgeDetailPage({
                       borderRadius: 8,
                     }}
                   >
-                    暂无文档，拖一个 PDF 试试
-                  </div>
+                    {t("kb.detail.noDocs")}
+                </div>
                 ) : (
                   docs.map((d) => {
                     const status = STATUS_COLOR[d.status] ?? STATUS_COLOR.pending;
@@ -374,7 +385,15 @@ export default function KnowledgeDetailPage({
                                 fontSize: 10,
                               }}
                             >
-                              {STATUS_LABEL[d.status] ?? d.status}
+                              {d.status === "pending"
+                                ? t("kb.detail.status.pending")
+                                : d.status === "parsing"
+                                ? t("kb.detail.status.parsing")
+                                : d.status === "ready"
+                                ? t("kb.detail.status.ready")
+                                : d.status === "failed"
+                                ? t("kb.detail.status.failed")
+                                : d.status}
                             </span>
                             {d.status === "ready" && (
                               <span>{d.chunk_count} chunks</span>
@@ -405,13 +424,68 @@ export default function KnowledgeDetailPage({
                             cursor: "pointer",
                           }}
                         >
-                          删除
+                          {t("common.delete")}
                         </button>
                       </div>
                     );
                   })
                 )}
               </div>
+              {/* Server-side pagination. Only render the control strip when
+                  there's more than one page; single-page KBs skip it to
+                  keep the panel tidy. */}
+              {docTotal > DOC_PAGE_SIZE && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    marginTop: 4,
+                    fontSize: 11,
+                    color: "var(--fg-subtle)",
+                  }}
+                >
+                  <span>
+                    {t("kb.detail.pager.summaryFmt", {
+                      a: (docPage - 1) * DOC_PAGE_SIZE + 1,
+                      b: Math.min(docPage * DOC_PAGE_SIZE, docTotal),
+                      n: docTotal,
+                    })}
+                  </span>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button
+                      type="button"
+                      onClick={() => setDocPage(1)}
+                      disabled={docPage <= 1}
+                      style={pagerBtnStyle(docPage <= 1)}
+                      title={t("kb.detail.pager.first")}
+                    >
+                      «
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDocPage((p) => Math.max(1, p - 1))}
+                      disabled={docPage <= 1}
+                      style={pagerBtnStyle(docPage <= 1)}
+                      title={t("kb.detail.pager.prev")}
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDocPage((p) => Math.min(Math.ceil(docTotal / DOC_PAGE_SIZE), p + 1))
+                      }
+                      disabled={docPage >= Math.ceil(docTotal / DOC_PAGE_SIZE)}
+                      style={pagerBtnStyle(docPage >= Math.ceil(docTotal / DOC_PAGE_SIZE))}
+                      title={t("kb.detail.pager.next")}
+                    >
+                      ›
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -425,7 +499,7 @@ export default function KnowledgeDetailPage({
                 gap: 6,
               }}
             >
-              🧩 Chunks
+              {t("kb.detail.chunksFmt")}
               {activeDoc && (
                 <span
                   style={{
@@ -449,11 +523,11 @@ export default function KnowledgeDetailPage({
                   borderRadius: 8,
                 }}
               >
-                选一个文档查看 chunks
+                {t("kb.detail.chunksEmpty")}
               </div>
             ) : chunksLoading ? (
               <div style={{ padding: 18, fontSize: 12, color: "var(--fg-subtle)" }}>
-                加载中…
+                {t("common.loading")}
               </div>
             ) : (
               <ChunkPreview
@@ -467,11 +541,27 @@ export default function KnowledgeDetailPage({
         </div>
 
         <div style={{ marginTop: 32, fontSize: 12, color: "var(--fg-subtle)" }}>
-          💡 提示：在「机器人」页编辑某个机器人 → 切到「📚 知识库」tab 即可把这个 KB 挂上去。
+          {t("kb.detail.hint")}
         </div>
       </div>
       {/* Stage 4 fix: shared PDF viewer across the page so any chunk
           preview opens the same drawer. */}
     </PageShell>
   );
+}
+
+function pagerBtnStyle(disabled: boolean): React.CSSProperties {
+  return {
+    width: 26,
+    height: 24,
+    borderRadius: 4,
+    border: "1px solid var(--border)",
+    background: disabled ? "var(--surface-2)" : "var(--surface-solid)",
+    color: disabled ? "var(--fg-subtle)" : "var(--fg)",
+    fontSize: 12,
+    lineHeight: 1,
+    cursor: disabled ? "default" : "pointer",
+    opacity: disabled ? 0.5 : 1,
+    transition: "all var(--transition)",
+  };
 }

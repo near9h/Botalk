@@ -17,9 +17,11 @@ import {
 } from "@/components/ui";
 import { PageShell } from "@/components/Sidebar";
 import { api, User } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 
 export default function UsersAdminPage() {
   const toast = useToast();
+  const { t } = useI18n();
   const [users, setUsers] = useState<User[]>([]);
   const [me, setMe] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,11 +47,11 @@ export default function UsersAdminPage() {
       setMe(m);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "加载用户失败", description: msg, variant: "error" });
+      toast.push({ title: t("users.toast.loadFail"), description: msg, variant: "error" });
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+  }, [toast, t]);
 
   useEffect(() => {
     refresh();
@@ -57,7 +59,7 @@ export default function UsersAdminPage() {
 
   const onCreate = async () => {
     if (!form.username.trim()) {
-      toast.push({ title: "请填写用户名", variant: "error" });
+      toast.push({ title: t("users.err.usernameRequired"), variant: "error" });
       return;
     }
     setCreating(true);
@@ -69,13 +71,13 @@ export default function UsersAdminPage() {
         email: form.email.trim() || undefined,
         role: form.role,
       });
-      toast.push({ title: "已创建", description: `用户「${u.username}」已新增`, variant: "success" });
+      toast.push({ title: t("common.toast.created"), description: t("users.toast.createdFmt", { name: u.username }), variant: "success" });
       setCreateOpen(false);
       setForm({ username: "", password: "", display_name: "", email: "", role: "user" });
       await refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "创建失败", description: msg, variant: "error" });
+      toast.push({ title: t("users.toast.createFail"), description: msg, variant: "error" });
     } finally {
       setCreating(false);
     }
@@ -84,11 +86,11 @@ export default function UsersAdminPage() {
   const onChangePassword = async () => {
     if (!changeTarget) return;
     if (!changeForm.n1 || changeForm.n1.length < 8) {
-      toast.push({ title: "新密码至少 8 位", variant: "error" });
+      toast.push({ title: t("users.pwErr.tooShort"), variant: "error" });
       return;
     }
     if (changeForm.n1 !== changeForm.n2) {
-      toast.push({ title: "两次输入的新密码不一致", variant: "error" });
+      toast.push({ title: t("users.pwErr.mismatch"), variant: "error" });
       return;
     }
     setChangeBusy(true);
@@ -99,56 +101,56 @@ export default function UsersAdminPage() {
       });
       setLastReset(out);
       toast.push({
-        title: "密码已修改",
-        description: `「${changeTarget.username}」的新密码：请妥善告知`,
+        title: t("users.toast.pwChanged.title"),
+        description: t("users.toast.pwChangedFmt", { name: changeTarget.username }),
         variant: "success",
       });
       setChangeForm({ n1: "", n2: "" });
       setChangeTarget(null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "修改失败", description: msg, variant: "error" });
+      toast.push({ title: t("users.toast.pwFail"), description: msg, variant: "error" });
     } finally {
       setChangeBusy(false);
     }
   };
 
   const onResetPassword = async (u: User) => {
-    if (!confirm(`重置「${u.username}」的密码？新密码会显示一次。`)) return;
+    if (!confirm(t("users.resetConfirmFmt", { name: u.username }))) return;
     try {
       const out = await api.resetUserPassword(u.id);
       setLastReset(out);
       toast.push({
-        title: "密码已重置",
-        description: `新密码已生成：请妥善告知用户`,
+        title: t("users.toast.resetOk.title"),
+        description: t("users.toast.resetOkFmt"),
         variant: "success",
       });
       await refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "重置失败", description: msg, variant: "error" });
+      toast.push({ title: t("users.toast.resetFail"), description: msg, variant: "error" });
     }
   };
 
   const onToggleStatus = async (u: User) => {
     if (u.status === "active") {
-      if (!confirm(`禁用用户「${u.username}」？该用户将无法登录。`)) return;
+      if (!confirm(t("users.disableConfirmFmt", { name: u.username }))) return;
       try {
         await api.disableUser(u.id);
-        toast.push({ title: "已禁用", description: `「${u.username}」已禁用`, variant: "success" });
+        toast.push({ title: t("users.toast.disabled.title"), description: t("users.toast.disabledFmt", { name: u.username }), variant: "success" });
         await refresh();
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        toast.push({ title: "禁用失败", description: msg, variant: "error" });
+        toast.push({ title: t("users.toast.disableFail"), description: msg, variant: "error" });
       }
     } else {
       try {
         await api.enableUser(u.id);
-        toast.push({ title: "已启用", description: `「${u.username}」已恢复`, variant: "success" });
+        toast.push({ title: t("users.toast.enabled.title"), description: t("users.toast.enabledFmt", { name: u.username }), variant: "success" });
         await refresh();
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        toast.push({ title: "启用失败", description: msg, variant: "error" });
+        toast.push({ title: t("users.toast.enableFail"), description: msg, variant: "error" });
       }
     }
   };
@@ -159,8 +161,8 @@ export default function UsersAdminPage() {
         <div style={{ padding: 32 }}>
           <EmptyState
             emoji="🔒"
-            title="无权限"
-            description="只有管理员才能访问用户管理页"
+            title={t("users.noPerm.title")}
+            description={t("users.noPerm.desc")}
           />
         </div>
       </PageShell>
@@ -182,22 +184,23 @@ export default function UsersAdminPage() {
         >
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: -0.5, marginBottom: 6 }}>
-              👥 用户管理
+              {t("users.title")}
             </h1>
             <p style={{ color: "var(--fg-muted)", fontSize: 14 }}>
-              新增/启停用户、重置密码；至少保留一名管理员
+              {t("users.subtitle")}
             </p>
           </div>
           <Button size="lg" onClick={() => setCreateOpen(true)}>
-            ＋ 新增用户
+            {t("users.action.new")}
           </Button>
         </div>
 
         {lastReset && (
           <Card style={{ marginBottom: 16, padding: 14 }}>
-            <div style={{ fontSize: 13, marginBottom: 6 }}>
-              🔑 用户 <b>{lastReset.username}</b> 的新密码（请复制后妥善告知）：
-            </div>
+            <div
+              style={{ fontSize: 13, marginBottom: 6 }}
+              dangerouslySetInnerHTML={{ __html: t("users.resetBannerFmt", { name: lastReset.username }) }}
+            />
             <code
               style={{
                 display: "inline-block",
@@ -217,7 +220,7 @@ export default function UsersAdminPage() {
               onClick={() => setLastReset(null)}
               style={{ marginLeft: 12 }}
             >
-              我已知悉
+              {t("users.resetAck")}
             </Button>
           </Card>
         )}
@@ -225,22 +228,22 @@ export default function UsersAdminPage() {
         {loading ? (
           <div style={{ textAlign: "center", padding: 60, color: "var(--fg-subtle)" }}>
             <div style={{ fontSize: 28, marginBottom: 8 }}>⏳</div>
-            加载中…
+            {t("common.loading")}
           </div>
         ) : users.length === 0 ? (
-          <EmptyState emoji="👥" title="还没有用户" description="点击右上角新增" />
+          <EmptyState emoji="👥" title={t("users.empty.title")} description={t("users.empty.cta")} />
         ) : (
           <Card style={{ padding: 0, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ background: "var(--surface-2)", textAlign: "left" }}>
-                  <th style={{ padding: "10px 14px" }}>用户名</th>
-                  <th style={{ padding: "10px 14px" }}>显示名</th>
-                  <th style={{ padding: "10px 14px" }}>邮箱</th>
-                  <th style={{ padding: "10px 14px" }}>角色</th>
-                  <th style={{ padding: "10px 14px" }}>状态</th>
-                  <th style={{ padding: "10px 14px" }}>最后登录</th>
-                  <th style={{ padding: "10px 14px" }}>操作</th>
+                  <th style={{ padding: "10px 14px" }}>{t("users.table.username")}</th>
+                  <th style={{ padding: "10px 14px" }}>{t("users.table.displayName")}</th>
+                  <th style={{ padding: "10px 14px" }}>{t("users.table.email")}</th>
+                  <th style={{ padding: "10px 14px" }}>{t("users.table.role")}</th>
+                  <th style={{ padding: "10px 14px" }}>{t("users.table.status")}</th>
+                  <th style={{ padding: "10px 14px" }}>{t("users.table.lastLogin")}</th>
+                  <th style={{ padding: "10px 14px" }}>{t("users.table.actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -258,23 +261,23 @@ export default function UsersAdminPage() {
                     </td>
                     <td style={{ padding: "10px 14px" }}>
                       <Badge variant={u.role === "admin" ? "info" : "default"}>
-                        {u.role === "admin" ? "管理员" : "普通用户"}
+                        {u.role === "admin" ? t("users.role.admin") : t("users.role.user")}
                       </Badge>
                     </td>
                     <td style={{ padding: "10px 14px" }}>
                       <Badge variant={u.status === "active" ? "auto" : "default"}>
-                        {u.status === "active" ? "正常" : "已禁用"}
+                        {u.status === "active" ? t("users.status.active") : t("users.status.disabled")}
                       </Badge>
                     </td>
                     <td style={{ padding: "10px 14px", color: "var(--fg-subtle)", fontSize: 12 }}>
                       {u.last_login_at
                         ? new Date(u.last_login_at).toLocaleString("zh-CN")
-                        : "从未"}
+                        : t("users.never")}
                     </td>
                     <td style={{ padding: "10px 14px" }}>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                         <Button size="sm" variant="secondary" onClick={() => onResetPassword(u)}>
-                          🔑 重置密码
+                          {t("users.action.resetPwd")}
                         </Button>
                         <Button
                           size="sm"
@@ -284,16 +287,16 @@ export default function UsersAdminPage() {
                             setChangeForm({ n1: "", n2: "" });
                           }}
                         >
-                          ✏️ 修改密码
+                          {t("users.action.changePwd")}
                         </Button>
                         <Button
                           size="sm"
                           variant={u.status === "active" ? "danger" : "secondary"}
                           onClick={() => onToggleStatus(u)}
                           disabled={u.id === me?.id}
-                          title={u.id === me?.id ? "不能对自己操作" : ""}
+                          title={u.id === me?.id ? t("users.disabledTitle") : ""}
                         >
-                          {u.status === "active" ? "禁用" : "启用"}
+                          {u.status === "active" ? t("users.action.disable") : t("users.action.enable")}
                         </Button>
                       </div>
                     </td>
@@ -308,62 +311,62 @@ export default function UsersAdminPage() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent>
           <DialogHeader
-            title="新增用户"
-            description="密码留空将自动生成 12 位随机密码并显示一次"
+            title={t("users.createDialog.title")}
+            description={t("users.createDialog.desc")}
             onClose={() => setCreateOpen(false)}
           />
           <div style={{ display: "grid", gap: 14, marginTop: 18 }}>
             <div>
-              <Label>用户名 *</Label>
+              <Label>{t("users.createDialog.label.username")}</Label>
               <Input
                 value={form.username}
                 onChange={(e) => setForm({ ...form, username: e.target.value })}
-                placeholder="alice"
+                placeholder={t("users.createDialog.username.placeholder")}
               />
             </div>
             <div>
-              <Label>显示名</Label>
+              <Label>{t("users.createDialog.label.displayName")}</Label>
               <Input
                 value={form.display_name}
                 onChange={(e) => setForm({ ...form, display_name: e.target.value })}
-                placeholder="艾丽斯"
+                placeholder={t("users.createDialog.displayName.placeholder")}
               />
             </div>
             <div>
-              <Label>邮箱</Label>
+              <Label>{t("users.createDialog.label.email")}</Label>
               <Input
                 value={form.email}
                 onChange={(e) => setForm({ ...form, email: e.target.value })}
-                placeholder="alice@example.com"
+                placeholder={t("users.createDialog.email.placeholder")}
               />
             </div>
             <div>
-              <Label>密码（留空自动生成）</Label>
+              <Label>{t("users.createDialog.label.password")}</Label>
               <Input
                 type="password"
                 value={form.password}
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
-                placeholder="至少 8 位"
+                placeholder={t("users.createDialog.password.placeholder")}
               />
             </div>
             <div>
-              <Label>角色</Label>
+              <Label>{t("users.createDialog.label.role")}</Label>
               <Select
                 value={form.role}
                 onChange={(v) => setForm({ ...form, role: v as "admin" | "user" })}
                 options={[
-                  { value: "user", label: "普通用户" },
-                  { value: "admin", label: "管理员" },
+                  { value: "user", label: t("users.createDialog.role.user") },
+                  { value: "admin", label: t("users.createDialog.role.admin") },
                 ]}
               />
             </div>
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={() => setCreateOpen(false)}>
-              取消
+              {t("users.createDialog.cancel")}
             </Button>
             <Button onClick={onCreate} disabled={creating}>
-              {creating ? "创建中…" : "创建"}
+              {creating ? t("users.createDialog.creating") : t("users.createDialog.create")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -377,13 +380,13 @@ export default function UsersAdminPage() {
       >
         <DialogContent>
           <DialogHeader
-            title="修改密码"
-            description={`管理员为「${changeTarget?.username ?? ""}」设置新密码（无需原密码）`}
+            title={t("users.changePwdDialog.title")}
+            description={t("users.changePwdDialog.descFmt", { name: changeTarget?.username ?? "" })}
             onClose={() => setChangeTarget(null)}
           />
           <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
             <div>
-              <Label>新密码（至少 8 位）</Label>
+              <Label>{t("users.changePwdDialog.label.new")}</Label>
               <Input
                 type="password"
                 value={changeForm.n1}
@@ -392,7 +395,7 @@ export default function UsersAdminPage() {
               />
             </div>
             <div>
-              <Label>确认新密码</Label>
+              <Label>{t("users.changePwdDialog.label.newConfirm")}</Label>
               <Input
                 type="password"
                 value={changeForm.n2}
@@ -403,10 +406,10 @@ export default function UsersAdminPage() {
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={() => setChangeTarget(null)}>
-              取消
+              {t("users.changePwdDialog.cancel")}
             </Button>
             <Button onClick={onChangePassword} disabled={changeBusy}>
-              {changeBusy ? "提交中…" : "保存"}
+              {changeBusy ? t("users.changePwdDialog.submitting") : t("users.changePwdDialog.save")}
             </Button>
           </DialogFooter>
         </DialogContent>

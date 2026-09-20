@@ -13,6 +13,7 @@ import {
 } from "@/components/ui";
 import { PageShell } from "@/components/Sidebar";
 import { api, ModelInfo, ModelTestResult, vendorLabel } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 
 /* ─── Per-model vendor icon ─── */
 
@@ -34,14 +35,14 @@ function vendorIcon(v: string): string {
   return VENDOR_ICON[v] || VENDOR_ICON.other;
 }
 
-const VENDOR_FILTERS = [
-  { value: "all", label: "全部" },
-  { value: "openai", label: "OpenAI" },
-  { value: "anthropic", label: "Anthropic" },
-  { value: "google", label: "Google" },
-  { value: "alibaba", label: "Alibaba" },
-  { value: "minimax", label: "MiniMax" },
-  { value: "other", label: "其他" },
+const VENDOR_FILTERS_KEYS: Array<{ value: string; labelKey: string }> = [
+  { value: "all", labelKey: "models.filter.all" },
+  { value: "openai", labelKey: "models.filter.openai" },
+  { value: "anthropic", labelKey: "models.filter.anthropic" },
+  { value: "google", labelKey: "models.filter.google" },
+  { value: "alibaba", labelKey: "models.filter.alibaba" },
+  { value: "minimax", labelKey: "models.filter.minimax" },
+  { value: "other", labelKey: "models.filter.other" },
 ];
 
 type TestState =
@@ -51,6 +52,7 @@ type TestState =
 
 export default function ModelsPage() {
   const toast = useToast();
+  const { t } = useI18n();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -65,7 +67,7 @@ export default function ModelsPage() {
       setModels(r.data);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "拉取模型失败", description: msg, variant: "error" });
+      toast.push({ title: t("models.toast.loadFail"), description: msg, variant: "error" });
     } finally {
       setLoading(false);
     }
@@ -105,7 +107,7 @@ export default function ModelsPage() {
     try {
       const r = await api.testModel({
         model: m.id,
-        prompt: "用一句话介绍你自己（不超过 50 字）",
+        prompt: t("models.test.testPrompt"),
         temperature: 0.5,
       });
       const durationMs = Date.now() - (tests[m.id]?.phase === "loading" ? (tests[m.id] as { startedAt: number }).startedAt : Date.now());
@@ -115,14 +117,14 @@ export default function ModelsPage() {
       }));
       if (r.ok) {
         toast.push({
-          title: `${m.id} · 可用`,
-          description: `延迟 ${r.latency_ms ?? "?"}ms · tokens ${r.total_tokens ?? "?"}`,
+          title: t("models.test.okFmt", { name: m.id }),
+          description: t("models.test.okDescFmt", { latency: r.latency_ms ?? "?", tokens: r.total_tokens ?? "?" }),
           variant: "success",
         });
       } else {
         toast.push({
-          title: `${m.id} · 不可用`,
-          description: r.error ?? "未知错误",
+          title: t("models.test.failFmt", { name: m.id }),
+          description: r.error ?? t("common.error.unknown"),
           variant: "error",
         });
       }
@@ -136,13 +138,13 @@ export default function ModelsPage() {
           durationMs: 0,
         },
       }));
-      toast.push({ title: `${m.id} · 请求失败`, description: msg, variant: "error" });
+      toast.push({ title: t("models.test.requestFailFmt", { name: m.id }), description: msg, variant: "error" });
     }
   };
 
   const testAll = async () => {
     if (filtered.length === 0) return;
-    if (!confirm(`将对 ${filtered.length} 个模型逐个发起测试请求（每个会消耗少量 token），确定继续？`)) return;
+    if (!confirm(t("models.test.batchConfirmFmt", { n: filtered.length }))) return;
     for (const m of filtered) {
       // Sequential to avoid overwhelming the upstream gateway.
       // eslint-disable-next-line no-await-in-loop
@@ -154,9 +156,10 @@ export default function ModelsPage() {
     v === "all" ? models.length : models.filter((m) => m.vendor === v).length;
 
   // Stats summary
-  const tested = Object.values(tests).filter((t) => t.phase === "done");
-  const passed = tested.filter((t) => t.phase === "done" && t.result.ok).length;
-  const failed = tested.filter((t) => t.phase === "done" && !t.result.ok).length;
+  const testedEntries = Object.values(tests).filter((t) => t.phase === "done");
+  const tested = testedEntries.length;
+  const passed = testedEntries.filter((t) => t.phase === "done" && t.result.ok).length;
+  const failed = testedEntries.filter((t) => t.phase === "done" && !t.result.ok).length;
 
   return (
     <PageShell>
@@ -164,20 +167,20 @@ export default function ModelsPage() {
         <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 24 }}>
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: -0.5, marginBottom: 6 }}>
-              模型管理
+              {t("models.title")}
             </h1>
             <p style={{ color: "var(--fg-muted)", fontSize: 14 }}>
               {models.length > 0
-                ? `从 NewAPI 拉取到 ${models.length} 个模型 · 已测试 ${tested.length}（通过 ${passed} / 失败 ${failed}）`
-                : "正在从 NewAPI 拉取模型列表…"}
+                ? t("models.subtitle_countFmt", { n: models.length, tested, passed, failed })
+                : t("models.subtitle_empty")}
             </p>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <Button variant="secondary" onClick={() => setRefreshKey((k) => k + 1)} disabled={loading}>
-              🔄 刷新列表
+              {t("models.action.refresh")}
             </Button>
             <Button onClick={testAll} disabled={loading || filtered.length === 0}>
-              ⚡ 批量测试
+              {t("models.action.testAll")}
             </Button>
           </div>
         </div>
@@ -197,11 +200,11 @@ export default function ModelsPage() {
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="🔍 搜索模型 ID / owned_by…"
+                placeholder={t("models.search.placeholder")}
               />
             </div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {VENDOR_FILTERS.map((v) => (
+              {VENDOR_FILTERS_KEYS.map((v) => (
                 <button
                   key={v.value}
                   onClick={() => setVendor(v.value)}
@@ -220,7 +223,7 @@ export default function ModelsPage() {
                   }}
                 >
                   {v.value !== "all" && <span>{vendorIcon(v.value)}</span>}
-                  {v.label}
+                  {t(v.labelKey)}
                   <span
                     style={{
                       fontSize: 10,
@@ -240,19 +243,19 @@ export default function ModelsPage() {
         {loading ? (
           <div style={{ textAlign: "center", padding: 60, color: "var(--fg-subtle)" }}>
             <div style={{ fontSize: 28, marginBottom: 8 }}>⏳</div>
-            正在从 NewAPI 拉取模型…
+            {t("models.subtitle_empty")}
           </div>
         ) : models.length === 0 ? (
           <EmptyState
             emoji="🔌"
-            title="无法从 NewAPI 拉取模型"
-            description="检查后端的 NEWAPI_BASE_URL 和 NEWAPI_API_KEY 配置；也可以直接查看后端日志"
+            title={t("models.empty.title")}
+            description={t("models.empty.desc")}
             action={
-              <Button onClick={() => setRefreshKey((k) => k + 1)}>🔄 重试</Button>
+              <Button onClick={() => setRefreshKey((k) => k + 1)}>{t("models.empty.cta")}</Button>
             }
           />
         ) : filtered.length === 0 ? (
-          <EmptyState emoji="🔍" title="没有匹配的模型" description="试试调整搜索词或切换过滤" />
+          <EmptyState emoji="🔍" title={t("models.noMatch.title")} description={t("models.noMatch.desc")} />
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
             {grouped.map(([v, list]) => (
@@ -302,6 +305,7 @@ function ModelCard({
 }) {
   const testing = state?.phase === "loading";
   const result = state?.phase === "done" ? state.result : null;
+  const { t } = useI18n();
 
   const emoji = pickVendorEmoji(model.vendor, model.id);
 
@@ -336,8 +340,8 @@ function ModelCard({
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             <Badge variant={vendorBadgeVariant(model.vendor)}>{vendorLabel(model.vendor)}</Badge>
-            {result?.ok === true && <Badge variant="success">✓ 可用</Badge>}
-            {result?.ok === false && <Badge variant="warning">✗ 不可用</Badge>}
+            {result?.ok === true && <Badge variant="success">{t("models.badge.ok")}</Badge>}
+            {result?.ok === false && <Badge variant="warning">{t("models.badge.fail")}</Badge>}
           </div>
         </div>
       </div>
@@ -391,12 +395,12 @@ function ModelCard({
         {testing ? (
           <>
             <span style={{ animation: "spin 1s linear infinite", display: "inline-block" }}>⏳</span>
-            测试中…
+            {t("models.test.busy")}
           </>
         ) : result ? (
-          "🔁 重新测试"
+          t("models.test.again")
         ) : (
-          "⚡ 测试此模型"
+          t("models.test.start")
         )}
       </Button>
 

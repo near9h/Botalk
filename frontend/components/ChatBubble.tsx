@@ -205,8 +205,8 @@ export function ChatBubble({
               <button
                 type="button"
                 onClick={() => onRetry(bubble.content)}
-                title="重新发送这条消息"
-                aria-label="重试"
+                title={t("chat.bubble.retryTitle")}
+                aria-label={t("chat.bubble.retryAria")}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -228,7 +228,7 @@ export function ChatBubble({
                   e.currentTarget.style.color = "var(--fg-muted)";
                 }}
               >
-                ↻ 重试
+                {t("chat.bubble.retry")}
               </button>
             )}
           </div>
@@ -359,6 +359,7 @@ type AttachmentCardsProps = {
 };
 
 function AttachmentCards({ attachments, accent }: AttachmentCardsProps) {
+  const { t } = useI18n();
   const [previewing, setPreviewing] = useState<AttachmentMeta | null>(null);
   return (
     <div
@@ -438,7 +439,7 @@ function AttachmentCards({ attachments, accent }: AttachmentCardsProps) {
                 {formatBytes(a.size_bytes)}
                 {isBot && (
                   <span style={{ marginLeft: 6, color: "var(--accent)" }}>
-                    · 机器人产出
+                    · {t("chat.bubble.botProduced")}
                   </span>
                 )}
               </div>
@@ -449,8 +450,8 @@ function AttachmentCards({ attachments, accent }: AttachmentCardsProps) {
                 ev.stopPropagation();
                 setPreviewing(a);
               }}
-              title="预览"
-              aria-label="预览"
+              title={t("attachment.previewAriaFmt", { name: a.filename })}
+              aria-label={t("attachment.previewAriaFmt", { name: a.filename })}
               style={iconBtnStyle}
             >
               👁
@@ -458,8 +459,8 @@ function AttachmentCards({ attachments, accent }: AttachmentCardsProps) {
             <a
               href={`/api/attachments/${a.public_id}/download`}
               download
-              title="下载"
-              aria-label="下载"
+              title={t("attachment.download")}
+              aria-label={t("attachment.downloadAria")}
               onClick={(ev) => ev.stopPropagation()}
               style={iconBtnStyle}
             >

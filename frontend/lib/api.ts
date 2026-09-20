@@ -266,6 +266,33 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * Variant of `request` that also returns the value of a named response
+ * header (defaults to `X-Total-Count`). Used for paginated list
+ * endpoints — the body still carries the page items, the header
+ * carries the total so the client can render "1–20 of 87" + page
+ * controls without a second round-trip.
+ */
+async function requestWithHeader<T>(
+  path: string,
+  headerName = "X-Total-Count",
+  init: RequestInit = {},
+): Promise<{ items: T; total: number }> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { "Content-Type": "application/json", ...(init.headers || {}) },
+    credentials: init.credentials ?? "include",
+    ...init,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`${res.status} ${res.statusText}: ${text}`);
+  }
+  const totalRaw = res.headers.get(headerName);
+  const total = totalRaw == null ? 0 : Number(totalRaw);
+  if (res.status === 204) return { items: undefined as unknown as T, total };
+  return { items: (await res.json()) as T, total: Number.isFinite(total) ? total : 0 };
+}
+
 export type User = {
   id: number;
   username: string;
@@ -642,8 +669,18 @@ export const api = {
     }),
   deleteKb: (kbId: string) =>
     request<void>(`/api/kb/${kbId}`, { method: "DELETE" }),
-  listKbDocuments: (kbId: string) =>
-    request<KbDocument[]>(`/api/kb/${kbId}/documents`),
+  listKbDocuments: (
+    kbId: string,
+    opts: { limit?: number; offset?: number } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (opts.limit != null) params.set("limit", String(opts.limit));
+    if (opts.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return requestWithHeader<KbDocument[]>(
+      `/api/kb/${kbId}/documents${qs ? `?${qs}` : ""}`,
+    );
+  },
   getKbDocument: (kbId: string, docId: number) =>
     request<KbDocument>(`/api/kb/${kbId}/documents/${docId}`),
   deleteKbDocument: (kbId: string, docId: number) =>

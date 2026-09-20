@@ -6,15 +6,65 @@ mcp.so, etc.). `stdio` transport is intentionally out of scope for now.
 
 The `mcp` SDK is imported lazily so the rest of the app still boots if the
 dependency is missing in a stripped-down deployment.
+
+Fix for security audit item SS3: every URL we hand to the MCP SDK goes
+through `_assert_safe_mcp_url()` first. This is a defense-in-depth check
+against an admin (or compromised-admin) configuring an MCP URL that
+points at the botgroup backend itself, at a peer service on the same
+host, or at any other private/loopback address — the classic SSRF
+attack surface. We allow two classes of hosts:
+  1. IP literals that are NOT private / loopback / link-local / reserved.
+  2. Hostnames that appear in `settings.mcp_allowed_hosts` (explicit
+     allowlist; hostname DNS rebinding is mitigated by ALSO blocking
+     private IPs at lookup time if we ever resolve).
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 from typing import Any
+from urllib.parse import urlparse
 
 from app.config import get_settings
 
 settings = get_settings()
+
+
+def _assert_safe_mcp_url(url: str) -> None:
+    """Reject URLs that target private network space.
+
+    Raises ValueError with a human-readable explanation. The caller
+    (`_client_context`) catches and re-raises as HTTPException(400).
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(
+            f"MCP URL scheme must be http(s); got {parsed.scheme!r}"
+        )
+    host = parsed.hostname
+    if not host:
+        raise ValueError("MCP URL missing host")
+
+    blocked_reason: str | None = None
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            blocked_reason = "private/reserved IP literal"
+    except ValueError:
+        # Hostname (not an IP literal). Require it to be in the
+        # explicit allowlist — we deliberately do NOT DNS-resolve
+        # here because TOCTOU / DNS rebinding could allow the caller to
+        # bypass the check (resolve to a public IP at check time, then
+        # to a private one at request time). Ops add their MCP server's
+        # public hostname to `MCP_ALLOWED_HOSTS` in .env.
+        if host not in settings.mcp_allowed_hosts:
+            blocked_reason = "hostname not in MCP_ALLOWED_HOSTS allowlist"
+
+    if blocked_reason:
+        raise ValueError(
+            f"MCP URL {url!r} rejected: {blocked_reason}. "
+            "Refusing to connect (SSRF defense)."
+        )
 
 
 def _mcp_sdk():
@@ -37,6 +87,7 @@ def _mcp_sdk():
 
 
 def _client_context(transport: str, url: str):
+    _assert_safe_mcp_url(url)  # security audit SS3 — reject private/loopback/MCP-not-allowlisted URLs
     ClientSession, sse_client, _sh = _mcp_sdk()
     timeout = settings.mcp_timeout_seconds
     if transport == "sse":

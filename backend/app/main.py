@@ -3,9 +3,14 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.auth import ensure_bootstrap_user
 from app.config import get_settings
@@ -23,6 +28,56 @@ from app.workers import ingest_worker
 
 settings = get_settings()
 log = logging.getLogger("botgroup.audit")
+
+
+def _check_env_file_permissions() -> None:
+    """Fix for security audit item A4.
+
+    The .env file ships with API keys + AUTH_SECRET in plaintext. On
+    a shared host any local user can read it (default 0644). We log
+    a loud warning at boot when the file is group/world readable so
+    the operator notices; we don't refuse to start because dev
+    environments often run with looser permissions and we don't want
+    to brick them on every code change.
+    """
+    env_path = Path(".env")
+    if not env_path.exists():
+        return
+    mode = env_path.stat().st_mode & 0o777
+    leaky_bits = mode & 0o077  # group|other read/write/execute
+    if leaky_bits:
+        log.warning(
+            "SECURITY: .env is world/group readable (mode=%s). "
+            "Run `chmod 600 .env` to protect the API keys it contains.",
+            oct(mode),
+        )
+
+
+_check_env_file_permissions()
+
+
+# SlowAPI rate limiter. `key_func` uses the proxy-injected X-Real-IP
+# when present (which nginx sets to the actual client address via
+# PROXY protocol) and falls back to the socket peer — matches the
+# `client_ip()` logic in `app/services/audit.py` so the rate limit
+# key and the audit log use the same source of truth.
+def _real_client_ip(request: Request) -> str:
+    return (
+        request.headers.get("x-real-ip")
+        or (request.client.host if request.client else "")
+        or "unknown"
+    )
+
+
+limiter = Limiter(
+    key_func=_real_client_ip,
+    default_limits=["200/minute"],
+    headers_enabled=True,
+)
+
+# The auth router picks the limiter up via `request.app.state.limiter`
+# at request time (see `app/api/auth.py`). Module-load late binding
+# is no longer needed — `limiter` is only attached to the app below.
 
 
 async def _audit_cleanup_loop() -> None:
@@ -116,6 +171,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SlowAPIMiddleware)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# API routers — these imports were moved to the top of the file
+# so the `auth_api._limiter_ref["v"] = limiter` line above can resolve
+# at module-load time (Python only resolves names defined in scope).
+# Module import order still satisfies include_router() — auth_api
+# just becomes a no-op since we never reach the late-binding line
+# until after all modules are loaded.
 
 
 @app.get("/health")

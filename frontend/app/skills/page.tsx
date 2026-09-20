@@ -19,24 +19,26 @@ import {
 } from "@/components/ui";
 import { PageShell } from "@/components/Sidebar";
 import { api, Skill, SkillAsset } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 
-const TYPE_LABEL: Record<string, string> = {
-  knowledge: "知识",
-  tool: "工具",
-  mcp: "MCP",
+const TYPE_LABEL_KEY: Record<string, string> = {
+  knowledge: "skillType.knowledge",
+  tool: "skillType.tool",
+  mcp: "skillType.mcp",
 };
 
-const CATEGORY_LABEL: Record<string, string> = {
-  document: "文档",
-  search: "搜索",
-  crawl: "爬取",
-  chart: "图表",
-  mcp: "MCP",
-  custom: "自定义",
+const CATEGORY_LABEL_KEY: Record<string, string> = {
+  document: "skillCategory.document",
+  search: "skillCategory.search",
+  crawl: "skillCategory.crawl",
+  chart: "skillCategory.chart",
+  mcp: "skillCategory.mcp",
+  custom: "skillCategory.custom",
 };
 
 export default function SkillsPage() {
   const toast = useToast();
+  const { t } = useI18n();
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -80,19 +82,19 @@ export default function SkillsPage() {
       setSkills(await api.listSkills());
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "加载技能失败", description: msg, variant: "error" });
+      toast.push({ title: t("skills.toast.loadFail"), description: msg, variant: "error" });
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+  }, [toast, t]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  const pushErr = (title: string, e: unknown) => {
+  const pushErr = (titleKey: string, e: unknown) => {
     const msg = e instanceof Error ? e.message : String(e);
-    toast.push({ title, description: msg, variant: "error" });
+    toast.push({ title: t(titleKey), description: msg, variant: "error" });
   };
 
   const onImportSkillMdFile = async (file: File | undefined) => {
@@ -100,10 +102,10 @@ export default function SkillsPage() {
     setImporting(true);
     try {
       const s = await api.importSkillMdFile(file);
-      toast.push({ title: "已导入", description: `技能「${s.name}」已创建`, variant: "success" });
+      toast.push({ title: t("common.toast.created"), description: t("skills.toast.importedFmt", { name: s.name }), variant: "success" });
       await refresh();
     } catch (e) {
-      pushErr("导入失败", e);
+      pushErr("skills.toast.importFail", e);
     } finally {
       setImporting(false);
       if (mdFileRef.current) mdFileRef.current.value = "";
@@ -115,12 +117,12 @@ export default function SkillsPage() {
     setImporting(true);
     try {
       const s = await api.importSkillMdUrl(mdUrl.trim(), mdUrlName.trim() || undefined);
-      toast.push({ title: "已导入", description: `技能「${s.name}」已创建`, variant: "success" });
+      toast.push({ title: t("common.toast.created"), description: t("skills.toast.importedFmt", { name: s.name }), variant: "success" });
       setMdUrl("");
       setMdUrlName("");
       await refresh();
     } catch (e) {
-      pushErr("导入失败", e);
+      pushErr("skills.toast.importFail", e);
     } finally {
       setImporting(false);
     }
@@ -135,12 +137,12 @@ export default function SkillsPage() {
         transport: mcpTransport,
         name: mcpName.trim() || undefined,
       });
-      toast.push({ title: "已导入", description: `MCP 技能「${s.name}」已创建`, variant: "success" });
+      toast.push({ title: t("common.toast.created"), description: t("skills.toast.importedMcpFmt", { name: s.name }), variant: "success" });
       setMcpUrl("");
       setMcpName("");
       await refresh();
     } catch (e) {
-      pushErr("MCP 导入失败", e);
+      pushErr("skills.toast.mcpImportFail", e);
     } finally {
       setImporting(false);
     }
@@ -154,7 +156,7 @@ export default function SkillsPage() {
       setCommunityResults(results);
       setCommunityOpen(true); // pop the marketplace modal
     } catch (e) {
-      pushErr("社区搜索失败", e);
+      pushErr("skills.toast.searchFail", e);
       setCommunityResults([]);
     } finally {
       setImporting(false);
@@ -175,8 +177,8 @@ export default function SkillsPage() {
         source: item.source ? String(item.source) : undefined,
       });
       toast.push({
-        title: "已安装到技能中心",
-        description: `「${installed.name}」可在机器人管理里勾选`,
+        title: t("skills.toast.installedFmt"),
+        description: t("skills.toast.installedDescFmt", { name: installed.name }),
         variant: "success",
       });
       // Mark this row as installed so the user sees a checkmark.
@@ -185,23 +187,24 @@ export default function SkillsPage() {
       );
       await refresh();
     } catch (e) {
-      pushErr("安装失败", e);
+      pushErr("skills.toast.installFail", e);
     } finally {
       setInstallingUrl(null);
     }
   };
 
   // Channel badge styling. Color-coded so the three sources are easy to
-  // tell apart in a long list.
-  const SOURCE_LABEL: Record<string, { label: string; bg: string; fg: string }> = {
-    mcp_marketplace: { label: "MCP Marketplace", bg: "rgba(99,102,241,0.15)", fg: "#4338ca" },
-    anthropic: { label: "Anthropic 官方", bg: "rgba(234,88,12,0.15)", fg: "#9a3412" },
-    findskill: { label: "findskill.md", bg: "rgba(14,165,233,0.15)", fg: "#0369a1" },
+  // tell apart in a long list. Labels looked up via the dict at render time.
+  type SourceStyle = { labelKey: string; bg: string; fg: string };
+  const SOURCE_STYLE: Record<string, SourceStyle> = {
+    mcp_marketplace: { labelKey: "skillSource.mcp_marketplace", bg: "rgba(99,102,241,0.15)", fg: "#4338ca" },
+    anthropic: { labelKey: "skillSource.anthropic", bg: "rgba(234,88,12,0.15)", fg: "#9a3412" },
+    findskill: { labelKey: "skillSource.findskill", bg: "rgba(14,165,233,0.15)", fg: "#0369a1" },
   };
 
   // Render a result card for the marketplace dialog.
   const renderCommunityCard = (r: Record<string, unknown>, i: number) => {
-    const title = String(r.title ?? r.name ?? r.id ?? `结果 ${i + 1}`);
+    const title = String(r.title ?? r.name ?? r.id ?? t("skills.community.unknownLabel", { n: i + 1 }));
     const url = String(r.url ?? r.html_url ?? r.homepage ?? "");
     const desc = String(r.description ?? "");
     const transport = String(r.transport ?? "streamable-http");
@@ -211,7 +214,8 @@ export default function SkillsPage() {
     const installedId = (r.__installed as number | undefined) ?? null;
     const busy = installingUrl === url;
     const source = String(r.source ?? "");
-    const sourceMeta = SOURCE_LABEL[source] ?? { label: source || "未知", bg: "var(--surface-solid)", fg: "var(--fg-muted)" };
+    const sourceMeta = SOURCE_STYLE[source] ?? { labelKey: "", bg: "var(--surface-solid)", fg: "var(--fg-muted)" };
+    const sourceLabel = sourceMeta.labelKey ? t(sourceMeta.labelKey) : (source || t("skills.community.unknownSource"));
     const scoreVal = typeof r.score === "number" ? r.score : null;
     const downloadsVal = typeof r.downloads === "number" ? r.downloads : null;
     const alsoIn = Array.isArray(r.also_in) ? (r.also_in as string[]) : [];
@@ -246,9 +250,9 @@ export default function SkillsPage() {
                 color: sourceMeta.fg,
                 fontWeight: 600,
               }}
-              title={`来源：${sourceMeta.label}`}
+              title={sourceLabel}
             >
-              {sourceMeta.label}
+              {sourceLabel}
             </span>
             {/* 评分 */}
             {scoreVal !== null && (
@@ -261,7 +265,7 @@ export default function SkillsPage() {
                   border: "1px solid var(--border)",
                   color: "var(--fg-muted)",
                 }}
-                title="来源给出的评分（越高越好）"
+                title={t("skills.community.scoreTitle")}
               >
                 ★ {scoreVal >= 1000 ? `${(scoreVal / 1000).toFixed(1)}k` : scoreVal.toFixed(1)}
               </span>
@@ -277,7 +281,7 @@ export default function SkillsPage() {
                   border: "1px solid var(--border)",
                   color: "var(--fg-muted)",
                 }}
-                title="下载量 / 安装量（来源不全时用 stars 代理）"
+                title={t("skills.community.downloadsTitle")}
               >
                 ⬇ {downloadsVal >= 1000 ? `${(downloadsVal / 1000).toFixed(1)}k` : downloadsVal}
               </span>
@@ -307,7 +311,7 @@ export default function SkillsPage() {
                   fontWeight: 600,
                 }}
               >
-                ✓ 已安装
+                {t("skills.community.installedBadge")}
               </span>
             ) : !installable ? (
               <span
@@ -320,7 +324,7 @@ export default function SkillsPage() {
                   color: "var(--fg-subtle)",
                 }}
               >
-                需本地部署
+                {t("skills.community.needLocal")}
               </span>
             ) : null}
             {alsoIn.length > 0 && (
@@ -332,9 +336,9 @@ export default function SkillsPage() {
                   background: "rgba(168,85,247,0.12)",
                   color: "#7e22ce",
                 }}
-                title={`同一条目也出现在：${alsoIn.join("、")}`}
+                title={t("skills.community.alsoInTitleFmt", { list: alsoIn.join(", ") })}
               >
-                也收录于：{alsoIn.map((s) => SOURCE_LABEL[s]?.label ?? s).join("、")}
+                {t("skills.community.alsoInFmt", { list: alsoIn.map((s) => SOURCE_STYLE[s]?.labelKey ? t(SOURCE_STYLE[s]!.labelKey) : s).join(", ") })}
               </span>
             )}
           </div>
@@ -376,7 +380,7 @@ export default function SkillsPage() {
         </div>
         {installable && url && !installedId && (
           <Button size="sm" onClick={() => onInstallCommunity(r)} disabled={busy}>
-            {busy ? "安装中…" : "⬇ 安装"}
+            {busy ? t("skills.community.installing") : t("skills.community.install")}
           </Button>
         )}
       </div>
@@ -392,7 +396,7 @@ export default function SkillsPage() {
 
   const onCreateSkill = async () => {
     if (!cName.trim()) {
-      toast.push({ title: "请填写技能名称", variant: "error" });
+      toast.push({ title: t("skills.toast.empty.name"), variant: "error" });
       return;
     }
     try {
@@ -405,17 +409,17 @@ export default function SkillsPage() {
         icon: "📄",
         manifest: { instructions: cInstructions.trim(), assets: [] },
         config_schema: {
-          assets: { type: "list", label: "模板资源", accept: [".md", ".markdown", ".txt"] },
+          assets: { type: "list", label: t("skills.create.assets.label"), accept: [".md", ".markdown", ".txt"] },
         },
       });
-      toast.push({ title: "已创建", description: `技能「${s.name}」已创建`, variant: "success" });
+      toast.push({ title: t("common.toast.created"), description: t("skills.toast.importedFmt", { name: s.name }), variant: "success" });
       setCreateOpen(false);
       setCName("");
       setCDesc("");
       setCInstructions("");
       await refresh();
     } catch (e) {
-      pushErr("创建失败", e);
+      pushErr("skills.toast.createFail", e);
     }
   };
 
@@ -423,10 +427,10 @@ export default function SkillsPage() {
     if (!file || !assetTarget) return;
     try {
       const s = await api.uploadSkillAsset(assetTarget.id, file);
-      toast.push({ title: "模板已上传", description: `已加入「${s.name}」`, variant: "success" });
+      toast.push({ title: t("skills.toast.uploaded.title"), description: t("skills.toast.uploadedFmt", { name: s.name }), variant: "success" });
       await refresh();
     } catch (e) {
-      pushErr("上传失败", e);
+      pushErr("skills.toast.uploadFail", e);
     } finally {
       setAssetTarget(null);
       if (assetFileRef.current) assetFileRef.current.value = "";
@@ -436,10 +440,10 @@ export default function SkillsPage() {
   const onSetDefaultAsset = async (s: Skill, a: SkillAsset) => {
     try {
       await api.updateSkillAsset(s.id, a.id, { is_default: true });
-      toast.push({ title: "已设为默认", description: `「${a.name}」现在是默认模板`, variant: "success" });
+      toast.push({ title: t("skills.toast.defaultSet.title"), description: t("skills.toast.defaultSetFmt", { name: a.name }), variant: "success" });
       await refresh();
     } catch (e) {
-      pushErr("设置失败", e);
+      pushErr("skills.toast.defaultFail", e);
     }
   };
 
@@ -457,7 +461,7 @@ export default function SkillsPage() {
     if (!editingAsset) return;
     const trimmedName = editName.trim();
     if (!trimmedName) {
-      toast.push({ title: "请填写模板名称", variant: "error" });
+      toast.push({ title: t("skills.toast.empty.templateName"), variant: "error" });
       return;
     }
     try {
@@ -465,33 +469,33 @@ export default function SkillsPage() {
         name: trimmedName,
         description: editDesc.trim(),
       });
-      toast.push({ title: "已更新", description: `模板「${trimmedName}」已保存`, variant: "success" });
+      toast.push({ title: t("skills.toast.assetSaved.title"), description: t("skills.toast.assetSavedFmt", { name: trimmedName }), variant: "success" });
       await refresh();
       closeEditAsset();
     } catch (e) {
-      pushErr("更新失败", e);
+      pushErr("skills.toast.assetFail", e);
     }
   };
 
   const onDeleteAsset = async (s: Skill, a: SkillAsset) => {
-    if (!confirm(`删除模板「${a.name}」？此操作不可恢复。`)) return;
+    if (!confirm(t("skills.manage.assetDeleteConfirmFmt", { name: a.name }))) return;
     try {
       await api.deleteSkillAsset(s.id, a.id);
-      toast.push({ title: "已删除", description: `模板「${a.name}」已移除`, variant: "success" });
+      toast.push({ title: t("skills.toast.deleted.title"), description: t("skills.toast.deletedFmt", { name: a.name }), variant: "success" });
       await refresh();
     } catch (e) {
-      pushErr("删除失败", e);
+      pushErr("skills.toast.assetDeleteFail", e);
     }
   };
 
   const onDelete = async (s: Skill) => {
-    if (!confirm(`确定删除技能「${s.name}」？`)) return;
+    if (!confirm(t("skills.deleteConfirmFmt", { name: s.name }))) return;
     try {
       await api.deleteSkill(s.id);
-      toast.push({ title: "已删除", description: `技能「${s.name}」已移除`, variant: "success" });
+      toast.push({ title: t("common.toast.deleted"), description: t("skills.toast.skillDeletedFmt", { name: s.name }), variant: "success" });
       await refresh();
     } catch (e) {
-      pushErr("删除失败", e);
+      pushErr("skills.toast.skillDeleteFail", e);
     }
   };
 
@@ -510,10 +514,10 @@ export default function SkillsPage() {
         >
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: -0.5, marginBottom: 6 }}>
-              技能中心
+              {t("skills.title")}
             </h1>
             <p style={{ color: "var(--fg-muted)", fontSize: 14 }}>
-              给机器人配置可复用能力：写文档、联网搜索、网页爬取、图表生成，或接入外部 MCP 服务
+              {t("skills.subtitle")}
             </p>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -523,10 +527,10 @@ export default function SkillsPage() {
               disabled={importing}
               onClick={() => mdFileRef.current?.click()}
             >
-              ⬆ 导入 SKILL.md
+              {t("skills.action.importMd")}
             </Button>
             <Button size="lg" onClick={() => setCreateOpen(true)}>
-              ＋ 新建知识技能
+              {t("skills.action.createKb")}
             </Button>
           </div>
         </div>
@@ -535,7 +539,7 @@ export default function SkillsPage() {
         <Card style={{ marginBottom: 24, padding: 20 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
             <div>
-              <Label>从 URL 导入 SKILL.md</Label>
+              <Label>{t("skills.section.mdImport")}</Label>
               <div style={{ display: "flex", gap: 6 }}>
                 <Input
                   value={mdUrl}
@@ -545,17 +549,17 @@ export default function SkillsPage() {
                 <Input
                   value={mdUrlName}
                   onChange={(e) => setMdUrlName(e.target.value)}
-                  placeholder="名称(可选)"
+                  placeholder={t("skills.section.mdImport.name")}
                   style={{ maxWidth: 120 }}
                 />
                 <Button variant="secondary" onClick={onImportMdUrl} disabled={importing || !mdUrl.trim()}>
-                  导入
+                  {t("skills.btn.import")}
                 </Button>
               </div>
             </div>
 
             <div>
-              <Label>接入 MCP Server</Label>
+              <Label>{t("skills.section.mcpConnect")}</Label>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <Input
                   value={mcpUrl}
@@ -565,25 +569,25 @@ export default function SkillsPage() {
                 <Input
                   value={mcpName}
                   onChange={(e) => setMcpName(e.target.value)}
-                  placeholder="名称(可选)"
+                  placeholder={t("skills.section.mcpConnect.name")}
                   style={{ maxWidth: 120 }}
                 />
                 <Button variant="secondary" onClick={onImportMcp} disabled={importing || !mcpUrl.trim()}>
-                  接入
+                  {t("skills.btn.connect")}
                 </Button>
               </div>
             </div>
 
             <div>
-              <Label>社区搜索（开源技能市场）</Label>
+              <Label>{t("skills.section.community")}</Label>
               <div style={{ display: "flex", gap: 6 }}>
                 <Input
                   value={communityQ}
                   onChange={(e) => setCommunityQ(e.target.value)}
-                  placeholder="搜索关键词…"
+                  placeholder={t("skills.search.placeholder")}
                 />
                 <Button variant="secondary" onClick={onCommunitySearch} disabled={importing || !communityQ.trim()}>
-                  搜索
+                  {t("skills.btn.search")}
                 </Button>
               </div>
             </div>
@@ -594,13 +598,13 @@ export default function SkillsPage() {
         {loading ? (
           <div style={{ textAlign: "center", padding: 60, color: "var(--fg-subtle)" }}>
             <div style={{ fontSize: 28, marginBottom: 8 }}>⏳</div>
-            加载中…
+            {t("common.loading")}
           </div>
         ) : skills.length === 0 ? (
           <EmptyState
             emoji="🧩"
-            title="还没有技能"
-            description="导入 SKILL.md、接入 MCP Server，或新建一个知识技能"
+            title={t("skills.empty.title")}
+            description={t("skills.empty.desc")}
           />
         ) : (
           <div
@@ -618,15 +622,15 @@ export default function SkillsPage() {
                     <div style={{ fontWeight: 600, fontSize: 15 }}>{s.name}</div>
                     <div style={{ fontSize: 11, color: "var(--fg-subtle)" }}>{s.key}</div>
                   </div>
-                  {s.builtin && <Badge variant="info">内置</Badge>}
+                  {s.builtin && <Badge variant="info">{t("skills.badge.builtin")}</Badge>}
                 </div>
                 <p style={{ fontSize: 13, color: "var(--fg-muted)", lineHeight: 1.55, margin: 0, flex: 1 }}>
-                  {s.description || "（无描述）"}
+                  {s.description || t("skills.noDescription")}
                 </p>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  <Badge variant="auto">{TYPE_LABEL[s.type] ?? s.type}</Badge>
-                  <Badge variant="default">{CATEGORY_LABEL[s.category] ?? s.category}</Badge>
-                  <Badge variant="default">{s.bot_count ?? 0} 个机器人</Badge>
+                  <Badge variant="auto">{TYPE_LABEL_KEY[s.type] ? t(TYPE_LABEL_KEY[s.type]) : s.type}</Badge>
+                  <Badge variant="default">{CATEGORY_LABEL_KEY[s.category] ? t(CATEGORY_LABEL_KEY[s.category]) : s.category}</Badge>
+                  <Badge variant="default">{t("skills.assetCountFmt", { n: s.bot_count ?? 0 })}</Badge>
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                   {s.type === "knowledge" && (
@@ -639,7 +643,7 @@ export default function SkillsPage() {
                       }}
                       style={{ flex: 1 }}
                     >
-                      ⬆ 上传模板
+                      {t("skills.action.uploadTemplate")}
                     </Button>
                   )}
                   {s.type === "knowledge" && (
@@ -648,15 +652,12 @@ export default function SkillsPage() {
                       size="sm"
                       onClick={() => setTemplatesTarget(s)}
                     >
-                      📋 管理模板
-                      {((s.manifest?.assets as SkillAsset[]) || []).length > 0
-                        ? ` (${(s.manifest?.assets as SkillAsset[]).length})`
-                        : ""}
+                      {t("skills.action.manageTemplatesFmt", { n: ((s.manifest?.assets as SkillAsset[]) || []).length })}
                     </Button>
                   )}
                   {!s.builtin && (
                     <Button variant="danger" size="sm" onClick={() => onDelete(s)}>
-                      删除
+                      {t("skills.action.delete")}
                     </Button>
                   )}
                 </div>
@@ -686,34 +687,34 @@ export default function SkillsPage() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent>
           <DialogHeader
-            title="新建知识技能"
-            description="创建一个基于提示词 + 模板的知识型技能"
+            title={t("skills.create.dialogTitle")}
+            description={t("skills.create.dialogDesc")}
             onClose={() => setCreateOpen(false)}
           />
           <div style={{ display: "grid", gap: 16, marginTop: 20 }}>
             <div>
-              <Label>名称</Label>
-              <Input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="如：产品需求文档" />
+              <Label>{t("skills.create.label.name")}</Label>
+              <Input value={cName} onChange={(e) => setCName(e.target.value)} placeholder={t("skills.create.name.placeholder")} />
             </div>
             <div>
-              <Label>描述</Label>
-              <Input value={cDesc} onChange={(e) => setCDesc(e.target.value)} placeholder="一句话说明这个技能做什么" />
+              <Label>{t("skills.create.label.desc")}</Label>
+              <Input value={cDesc} onChange={(e) => setCDesc(e.target.value)} placeholder={t("skills.create.desc.placeholder")} />
             </div>
             <div>
-              <Label>提示词（指令）</Label>
+              <Label>{t("skills.create.label.instructions")}</Label>
               <Textarea
                 rows={6}
                 value={cInstructions}
                 onChange={(e) => setCInstructions(e.target.value)}
-                placeholder="当用户要求…时，严格按模板输出…"
+                placeholder={t("skills.create.instructions.placeholder")}
               />
             </div>
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={() => setCreateOpen(false)}>
-              取消
+              {t("common.cancel")}
             </Button>
-            <Button onClick={onCreateSkill}>创建</Button>
+            <Button onClick={onCreateSkill}>{t("kb.form.create")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -729,8 +730,8 @@ export default function SkillsPage() {
               return (
                 <>
                   <DialogHeader
-                    title={`模板管理 · ${latest.name}`}
-                    description={`为「${latest.name}」配置文档模板。多模板时在对话中点名切换，例如「用每日站会纪要」。`}
+                    title={t("skills.manage.titleFmt", { name: latest.name })}
+                    description={t("skills.manage.descFmt", { name: latest.name })}
                     onClose={() => setTemplatesTarget(null)}
                   />
                   <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 20 }}>
@@ -745,7 +746,7 @@ export default function SkillsPage() {
                           fontSize: 13,
                         }}
                       >
-                        还没有模板。点击下方按钮上传第一个模板。
+                        {t("skills.manage.noAssets")}
                       </div>
                     ) : (
                       assets.map((a, idx) => (
@@ -802,7 +803,7 @@ export default function SkillsPage() {
                                 {a.name}
                               </span>
                               {a.is_default ? (
-                                <Badge variant="info">默认</Badge>
+                                <Badge variant="info">{t("skills.manage.defaultBadge")}</Badge>
                               ) : (
                                 <button
                                   onClick={() => onSetDefaultAsset(latest, a)}
@@ -815,9 +816,9 @@ export default function SkillsPage() {
                                     border: "1px solid var(--border)",
                                     cursor: "pointer",
                                   }}
-                                  title="设为默认模板"
+                                  title={t("skills.manage.setDefaultTitle")}
                                 >
-                                  设为默认
+                                  {t("skills.manage.setDefault")}
                                 </button>
                               )}
                             </div>
@@ -830,7 +831,7 @@ export default function SkillsPage() {
                               }}
                             >
                               {a.description || (
-                                <span style={{ color: "var(--fg-subtle)" }}>（无描述，点击「编辑」补充一句话用途）</span>
+                                <span style={{ color: "var(--fg-subtle)" }}>{t("skills.manage.noDescPlaceholder")}</span>
                               )}
                             </div>
                             <div style={{ display: "flex", gap: 6 }}>
@@ -839,14 +840,14 @@ export default function SkillsPage() {
                                 variant="secondary"
                                 onClick={() => openEditAsset(a)}
                               >
-                                ✏️ 编辑
+                                {t("skills.manage.edit")}
                               </Button>
                               <Button
                                 size="sm"
                                 variant="danger"
                                 onClick={() => onDeleteAsset(latest, a)}
                               >
-                                删除
+                                {t("skills.manage.delete")}
                               </Button>
                             </div>
                           </div>
@@ -871,7 +872,7 @@ export default function SkillsPage() {
                         }}
                         style={{ flex: 1 }}
                       >
-                        ⬆ 上传新模板
+                        {t("skills.manage.uploadNew")}
                       </Button>
                     </div>
                   </div>
@@ -887,34 +888,34 @@ export default function SkillsPage() {
           {editingAsset && templatesTarget && (
             <>
               <DialogHeader
-                title="编辑模板"
-                description={`修改名称与一句话描述。模板内容请重新上传文件。`}
+                title={t("skills.manage.editAssetTitle")}
+                description={t("skills.manage.editAssetDesc")}
                 onClose={closeEditAsset}
               />
               <div style={{ display: "grid", gap: 16, marginTop: 20 }}>
                 <div>
-                  <Label>模板名称</Label>
+                  <Label>{t("skills.manage.assetLabel.name")}</Label>
                   <Input
                     value={editName}
                     onChange={(e) => setEditName(e.target.value)}
-                    placeholder="如：每日站会纪要"
+                    placeholder={t("skills.manage.assetName.placeholder")}
                   />
                 </div>
                 <div>
-                  <Label>用途描述（一句话）</Label>
+                  <Label>{t("skills.manage.assetLabel.desc")}</Label>
                   <Textarea
                     rows={3}
                     value={editDesc}
                     onChange={(e) => setEditDesc(e.target.value)}
-                    placeholder="例如：每日站会纪要：昨日进展、阻塞、今日计划"
+                    placeholder={t("skills.manage.assetDesc.placeholder")}
                   />
                 </div>
               </div>
               <DialogFooter>
                 <Button variant="secondary" onClick={closeEditAsset}>
-                  取消
+                  {t("skills.manage.cancel")}
                 </Button>
-                <Button onClick={() => onSaveEditAsset(templatesTarget)}>保存</Button>
+                <Button onClick={() => onSaveEditAsset(templatesTarget)}>{t("skills.manage.save")}</Button>
               </DialogFooter>
             </>
           )}
@@ -924,8 +925,8 @@ export default function SkillsPage() {
       <Dialog open={communityOpen} onOpenChange={setCommunityOpen}>
         <DialogContent>
           <DialogHeader
-            title={`🛒 社区技能市场：${communityQ || "全部"}`}
-            description="聚合 MCP Marketplace.io · Anthropic 官方 skills · findskill.md 三路开源市场，已按渠道去重，按评分排序。"
+            title={t("skills.community.dialogTitleFmt", { q: communityQ || t("skills.community.dialogTitleAll") })}
+            description={t("skills.community.dialogDesc")}
             onClose={() => setCommunityOpen(false)}
           />
           {/* 健康监控条：把后端的 `__health__` 错误展示出来，提示用户 */}
@@ -943,16 +944,18 @@ export default function SkillsPage() {
               }}
             >
               <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                ⚠️ 部分渠道未返回结果
+                {t("skills.community.healthWarning")}
               </div>
               {Object.entries(healthErrors).map(([src, msg]) => (
                 <div key={src}>
-                  · <b>{SOURCE_LABEL[src]?.label ?? src}</b>: {String(msg)}
+                  · <b>{SOURCE_STYLE[src]?.labelKey ? t(SOURCE_STYLE[src]!.labelKey) : src}</b>: {String(msg)}
                 </div>
               ))}
               {healthErrors.anthropic || healthErrors.findskill ? (
                 <div style={{ marginTop: 4, color: "#92400e" }}>
-                  提示：在 <code>.env</code> 配置 <code>GITHUB_TOKEN</code> 可将 GitHub 接口限流从 60/h 提升到 5000/h
+                  {t("skills.community.healthGitTip").split("GITHUB_TOKEN")[0]}
+                  <code>GITHUB_TOKEN</code>
+                  {t("skills.community.healthGitTip").split("GITHUB_TOKEN")[1] || ""}
                 </div>
               ) : null}
             </div>
@@ -976,7 +979,7 @@ export default function SkillsPage() {
                   fontSize: 13,
                 }}
               >
-                没有结果
+                {t("skills.community.empty")}
               </div>
             ) : (
               displayResults.map((r, i) => renderCommunityCard(r, i))
@@ -984,10 +987,10 @@ export default function SkillsPage() {
           </div>
           <DialogFooter>
             <div style={{ fontSize: 11, color: "var(--fg-subtle)", marginRight: "auto" }}>
-              共 {displayResults.length} 条 · 已按渠道去重
+              {t("skills.community.totalFmt", { n: displayResults.length })}
             </div>
             <Button variant="secondary" onClick={() => setCommunityOpen(false)}>
-              关闭
+              {t("skills.community.close")}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -20,6 +20,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useI18n } from "@/lib/i18n";
 
 /* ──────────────────────────── utils ──────────────────────────── */
 
@@ -355,7 +356,7 @@ export function DialogContent({ children }: { children: ReactNode }) {
   return <div style={{ padding: 24 }}>{children}</div>;
 }
 
-export function DialogHeader({ title, description, onClose }: { title: string; description?: string; onClose?: () => void }) {
+export function DialogHeader({ title, description, onClose, closeAriaLabel = "Close" }: { title: string; description?: string; onClose?: () => void; closeAriaLabel?: string }) {
   const ctx = useContext(DialogContext);
   return (
     <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
@@ -366,7 +367,7 @@ export function DialogHeader({ title, description, onClose }: { title: string; d
         )}
       </div>
       {onClose && ctx && (
-        <IconButton onClick={() => ctx.setOpen(false)} aria-label="Close">
+        <IconButton onClick={() => ctx.setOpen(false)} aria-label={closeAriaLabel}>
           ✕
         </IconButton>
       )}
@@ -414,13 +415,13 @@ export function Select({
   value,
   onChange,
   options,
-  placeholder = "选择…",
+  placeholder = "Select…",
   searchable = false,
   fullWidth = true,
   pageSize = 20,
   fetchPage,
   labelOf,
-  searchPlaceholder = "搜索模型…",
+  searchPlaceholder = "Search…",
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -436,6 +437,7 @@ export function Select({
   labelOf?: (item: unknown) => SelectOption;
   searchPlaceholder?: string;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
@@ -584,7 +586,7 @@ export function Select({
               autoFocus
               value={query}
               onChange={(e) => onQueryInput(e.target.value)}
-              placeholder="搜索模型…"
+              placeholder={searchPlaceholder}
               style={{
                 ...inputBaseStyle,
                 width: "100%",
@@ -594,7 +596,7 @@ export function Select({
           )}
           {filtered.length === 0 ? (
             <div style={{ padding: 12, color: "var(--fg-subtle)", fontSize: 12, textAlign: "center" }}>
-              {pagedLoading ? "加载中…" : "无匹配项"}
+              {pagedLoading ? t("common.empty.loading") : t("common.empty.noMatch")}
             </div>
           ) : (
             filtered.map((o) => (

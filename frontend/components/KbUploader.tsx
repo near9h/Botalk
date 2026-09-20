@@ -16,6 +16,7 @@
 import { useRef, useState } from "react";
 import { api, KbDocument } from "@/lib/api";
 import { useToast } from "@/components/ui";
+import { useI18n } from "@/lib/i18n";
 
 export function KbUploader({
   kbId,
@@ -24,6 +25,7 @@ export function KbUploader({
   kbId: string;
   onUploaded?: (doc: KbDocument) => void;
 }) {
+  const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -38,15 +40,15 @@ export function KbUploader({
         try {
           const doc = await api.uploadKbDocument(kbId, f);
           toast.push({
-            title: `已上传「${f.name}」`,
-            description: "MinerU 解析与 RAGFlow 入库已排队",
+            title: t("kbUploader.toast.okFmt", { name: f.name }),
+            description: t("kbUploader.toast.okDesc"),
             variant: "success",
           });
           onUploaded?.(doc);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           toast.push({
-            title: `「${f.name}」上传失败`,
+            title: t("kbUploader.toast.failFmt", { name: f.name }),
             description: msg,
             variant: "error",
           });
@@ -94,10 +96,10 @@ export function KbUploader({
     >
       <div style={{ fontSize: 24 }}>{busy ? "⏳" : "📤"}</div>
       <div style={{ fontSize: 13, fontWeight: 500 }}>
-        {busy ? "上传中…" : "点击选择 或 拖拽文件到此处"}
+        {busy ? t("kbUploader.uploading") : t("kbUploader.prompt")}
       </div>
       <div style={{ fontSize: 11, color: "var(--fg-subtle)" }}>
-        支持 PDF / Word / Excel / PPT / Markdown / HTML。上传后自动解析并入库
+        {t("kbUploader.hint")}
       </div>
       <input
         ref={inputRef}

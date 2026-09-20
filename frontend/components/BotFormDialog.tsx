@@ -145,14 +145,14 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
           .map((bs) => bs.skill.id);
         setSelectedSkillIds(enabledIds);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        toast.push({ title: "加载技能失败", description: msg, variant: "error" });
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [open, initial, toast]);
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.push({ title: t("botForm.toast.loadFail"), description: msg, variant: "error" });
+    }
+  })();
+  return () => {
+    alive = false;
+  };
+}, [open, initial, toast, t]);
 
   // Filter helpers — case-insensitive substring match across name +
   // description (KB list also tags in description). Substring is
@@ -241,10 +241,10 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
   const generatePersona = async () => {
     const cleanName = name.trim();
     if (!cleanName) {
-      toast.push({ title: "请先填写机器人名称", variant: "error" });
+      toast.push({ title: t("botForm.err.nameRequired"), variant: "error" });
       return;
     }
-    if (persona.trim() && !confirm("将覆盖当前人设内容，是否继续？")) {
+    if (persona.trim() && !confirm(t("botForm.aiGenerate.confirmOverwrite"))) {
       return;
     }
     setGenerating(true);
@@ -257,13 +257,13 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
       });
       setPersona(res.persona);
       toast.push({
-        title: "已生成默认人设",
-        description: `模型 ${res.model} · ${res.latency_ms}ms`,
+        title: t("botForm.aiGenerate.toastCreated"),
+        description: t("botForm.aiGenerate.toastCreatedDescFmt", { model: res.model, ms: res.latency_ms }),
         variant: "success",
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "人设生成失败", description: msg, variant: "error" });
+      toast.push({ title: t("botForm.aiGenerate.fail"), description: msg, variant: "error" });
     } finally {
       setGenerating(false);
     }
@@ -273,7 +273,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
     setErrors({});
     const cleanName = name.trim();
     if (!cleanName) {
-      setErrors({ name: "请填写机器人名称" });
+      setErrors({ name: t("botForm.err.nameRequired") });
       return;
     }
     let parsedParams: Record<string, unknown> = {};
@@ -281,7 +281,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
       try {
         parsedParams = JSON.parse(paramsText);
       } catch {
-        setErrors({ params: "params 不是合法 JSON" });
+        setErrors({ params: t("botForm.params.errJson") });
         return;
       }
     }
@@ -318,15 +318,15 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
         );
       }
       toast.push({
-        title: initial ? "已保存" : "已创建",
-        description: `机器人「${body.name}」${initial ? "已更新" : "已加入你的机器人列表"}`,
+        title: t(initial ? "common.toast.saved" : "common.toast.created"),
+        description: t("bots.toast.createdFmt", { name: body.name, action: t(initial ? "bots.toast.createdDesc.update" : "bots.toast.createdDesc.new") }),
         variant: "success",
       });
       await onSaved();
       onOpenChange(false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "保存失败", description: msg, variant: "error" });
+      toast.push({ title: t("botForm.submitFail"), description: msg, variant: "error" });
     } finally {
       setSaving(false);
     }
@@ -336,8 +336,8 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
     <Dialog open={open} onOpenChange={onOpenChange} maxWidth={900}>
       <DialogContent>
         <DialogHeader
-          title={initial ? "编辑机器人" : "新建机器人"}
-          description={initial ? "修改人设、模型、技能" : "起名 + 配技能，几秒钟就能拉进群"}
+          title={t(initial ? "botForm.title.edit" : "botForm.title.new")}
+          description={t(initial ? "botForm.desc.edit" : "botForm.desc.new")}
           onClose={() => onOpenChange(false)}
         />
         <div
@@ -353,15 +353,15 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
           <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
             <div style={{ display: "flex", gap: 12 }}>
               <div style={{ width: 80 }}>
-                <Label>头像</Label>
+                <Label>{t("botForm.label.emoji")}</Label>
                 <Input value={emoji} onChange={(e) => setEmoji(e.target.value)} maxLength={4} />
               </div>
               <div style={{ flex: 1 }}>
-                <Label>名称</Label>
+                <Label>{t("botForm.label.name")}</Label>
                 <Input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="如：高级开发"
+                  placeholder={t("botForm.name.placeholder")}
                 />
                 {errors.name && (
                   <div style={{ color: "var(--danger)", fontSize: 12, marginTop: 4 }}>
@@ -379,12 +379,12 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                   marginBottom: 6,
                 }}
               >
-                <Label>人设</Label>
+                <Label>{t("botForm.label.persona")}</Label>
                 <button
                   type="button"
                   onClick={generatePersona}
                   disabled={generating || saving}
-                  title="根据当前名称自动生成默认人设"
+                  title={t("botForm.aiGenerate.title")}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -399,32 +399,32 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                     cursor: generating ? "wait" : "pointer",
                   }}
                 >
-                  {generating ? "⏳ 生成中…" : "✨ AI 生成"}
+                  {generating ? t("botForm.aiGenerate.busy") : t("botForm.aiGenerate")}
                 </button>
               </div>
               <Textarea
                 rows={6}
                 value={persona}
                 onChange={(e) => setPersona(e.target.value)}
-                placeholder="你是一位……（点击右上角「AI 生成」自动起草）"
+                placeholder={t("botForm.persona.placeholder")}
               />
             </div>
             <div style={{ display: "flex", gap: 12 }}>
               <div style={{ flex: 1 }}>
-                <Label>模型</Label>
+                <Label>{t("botForm.label.model")}</Label>
                 {modelOptions.length > 0 ? (
                   <Select
                     value={model}
                     onChange={setModel}
                     options={modelOptions}
-                    placeholder="选择模型…"
+                    placeholder={t("botForm.model.placeholder")}
                     searchable
                   />
                 ) : (
                   <Input
                     value={model}
                     onChange={(e) => setModel(e.target.value)}
-                    placeholder="例如：gpt-4o-mini"
+                    placeholder="gpt-4o-mini"
                   />
                 )}
                 {modelOptions.length === 0 && (
@@ -435,12 +435,12 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                       marginTop: 4,
                     }}
                   >
-                    暂未拉到模型列表，可先手填，或到「模型」页刷新
+                    {t("botForm.model.emptyHint")}
                   </div>
                 )}
               </div>
               <div style={{ width: 120 }}>
-                <Label>温度</Label>
+                <Label>{t("botForm.label.temperature")}</Label>
                 <Input
                   type="number"
                   min={0}
@@ -452,12 +452,12 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
               </div>
             </div>
             <div>
-              <Label>params (JSON)</Label>
+              <Label>{t("botForm.label.params")}</Label>
               <Textarea
                 rows={3}
                 value={paramsText}
                 onChange={(e) => setParamsText(e.target.value)}
-                placeholder='{"top_p": 0.9}'
+                placeholder={t("botForm.params.placeholder")}
               />
               {errors.params && (
                 <div style={{ color: "var(--danger)", fontSize: 12, marginTop: 4 }}>
@@ -493,11 +493,10 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                   style={{ flex: 1, cursor: "pointer", fontSize: 13 }}
                 >
                   <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                    🌍 公开给所有用户
+                    {t("botForm.share.label")}
                   </div>
                   <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.5 }}>
-                    开启后，所有用户能在「机器人」页看到并使用这个 bot；
-                    但只有你（创建者）和管理员能修改或删除。
+                    {t("botForm.share.desc")}
                   </div>
                 </label>
               </div>
@@ -528,19 +527,19 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                   active={rightTab === "skills"}
                   onClick={() => setRightTab("skills")}
                 >
-                  🧩 技能
+                  {t("botForm.tab.skills")}
                 </TabButton>
                 <TabButton
                   active={rightTab === "knowledge"}
                   onClick={() => setRightTab("knowledge")}
                 >
-                  📚 知识库
+                  {t("botForm.tab.knowledge")}
                 </TabButton>
               </div>
               <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>
                 {rightTab === "skills"
-                  ? `${selectedSkillIds.length} / ${skills.length} 已选`
-                  : `${selectedKbPublicIds.length} / ${kbs.length} 已挂载`}
+                  ? t("botForm.skills.summaryFmt", { a: selectedSkillIds.length, b: skills.length })
+                  : t("botForm.kbs.summaryFmt", { a: selectedKbPublicIds.length, b: kbs.length })}
               </span>
             </div>
             {/* Search bar — sits outside the scroll container so it
@@ -587,7 +586,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                       padding: 24,
                     }}
                   >
-                    暂无技能，请先到「技能中心」启用。
+                    {t("botForm.skills.empty")}
                   </div>
                 ) : filteredSkills.length === 0 ? (
                   <div
@@ -598,7 +597,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                       padding: 24,
                     }}
                   >
-                    没有匹配「{skillQuery}」的技能
+                    {t("botForm.noMatchFmt", { q: skillQuery, type: t("botForm.noMatchSkill") })}
                   </div>
                 ) : (
                   pagedSkills.map((s) => {
@@ -641,10 +640,10 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                               lineHeight: 1.4,
                             }}
                           >
-                            {s.description || "（无描述）"}
+                            {s.description || t("botForm.noDescription")}
                             {assetCount > 0 && (
                               <span style={{ marginLeft: 6, color: "var(--accent)" }}>
-                                · {assetCount} 模板
+                                {t("botForm.assetCountFmt", { n: assetCount })}
                               </span>
                             )}
                           </div>
@@ -662,7 +661,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                     padding: 24,
                   }}
                 >
-                  暂无可挂载的知识库，请先到「知识库」页创建。
+                  {t("botForm.kbs.empty")}
                 </div>
               ) : filteredKbs.length === 0 ? (
                 <div
@@ -673,7 +672,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                     padding: 24,
                   }}
                 >
-                  没有匹配「{kbQuery}」的知识库
+                  {t("botForm.noMatchFmt", { q: kbQuery, type: t("botForm.noMatchKb") })}
                 </div>
               ) : (
                 pagedKbs.map((k) => {
@@ -730,7 +729,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                                 color: "#166534",
                               }}
                             >
-                              公开
+                              {t("botForm.kb.publicBadge")}
                             </span>
                           )}
                         </div>
@@ -742,10 +741,10 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                             lineHeight: 1.4,
                           }}
                         >
-                          {k.description || "（无描述）"}
+                          {k.description || t("botForm.noDescription")}
                           {!(k.ready_doc_count ?? 0) && (
                             <span style={{ marginLeft: 6, color: "var(--danger)" }}>
-                              · 本地检索尚未就绪
+                              {t("botForm.kb.notReady")}
                             </span>
                           )}
                         </div>
@@ -777,10 +776,10 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
         </div>
         <DialogFooter>
           <Button variant="secondary" onClick={() => onOpenChange(false)}>
-            取消
+            {t("botForm.cancel")}
           </Button>
           <Button onClick={onSubmit} disabled={saving}>
-            {saving ? "保存中…" : initial ? "保存" : "创建"}
+            {saving ? t("policy.saving") : t(initial ? "botForm.save.update" : "botForm.save.create")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -834,6 +833,7 @@ function SearchBar({
   onChange: (v: string) => void;
   placeholder?: string;
 }) {
+  const { t } = useI18n();
   return (
     <div style={{ position: "relative", flexShrink: 0, width: "100%" }}>
       <span
@@ -864,9 +864,9 @@ function SearchBar({
       />
       {value && (
         <button
-          type="button"
-          aria-label="清空搜索"
-          onClick={() => onChange("")}
+            type="button"
+            aria-label={t("botForm.aria.clearSearch")}
+            onClick={() => onChange("")}
           style={{
             position: "absolute",
             right: 6,

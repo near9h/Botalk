@@ -82,8 +82,11 @@ async def create_user(
     )
     session.add(user)
     await session.flush()  # to get id
-    # 在 password 还在内存里时先把"初始密码"也带进 audit detail；
-    # 仅这一次回写，随后就 commit。
+    # Audit only records the *fact* that a user was created (and by
+    # whom). The initial password NEVER lands in audit_log.detail —
+    # that's the fix for security audit item A1. The plaintext
+    # password still comes back to the admin via the response so they
+    # can hand it to the new user; we just don't persist it.
     await audit_service.log(
         session,
         ctx,
@@ -91,7 +94,7 @@ async def create_user(
         target_type="user",
         target_id=str(user.id),
         target_name=user.username,
-        detail={"role": user.role, "initial_password": password},
+        detail={"role": user.role, "password_provided": payload.password is not None},
     )
     await session.commit()
     await session.refresh(user)

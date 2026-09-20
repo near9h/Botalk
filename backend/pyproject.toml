@@ -24,6 +24,7 @@ dependencies = [
     "pypandoc-binary>=1.13",  # in-tree pandoc binary (no system pandoc required)
     "jinja2>=3.1",  # structured-payload → HTML/docx rendering (路线 B)
     "markdown-it-py>=3.0",  # safe markdown→html for template body (html:false)
+    "slowapi>=0.1.9",  # rate limiting (security audit item A2)
 ]
 
 [build-system]

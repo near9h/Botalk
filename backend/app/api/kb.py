@@ -39,6 +39,7 @@ from fastapi import (
     File,
     HTTPException,
     Query,
+    Response,
     UploadFile,
 )
 from fastapi.responses import FileResponse
@@ -388,16 +389,33 @@ async def delete_kb(
 @router.get("/{kb_id}/documents", response_model=list[KbDocumentOut])
 async def list_kb_documents(
     kb_id: str,
+    response: Response,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
+    limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> list[KbDocumentOut]:
+    """知识库下的文档列表，按 `created_at DESC` 排序。
+
+    支持分页：默认每页 20 条、上限 200；响应头 `X-Total-Count` 给出可见总数。
+    """
     kb = await _resolve_kb(session, kb_id, user)
+    base = (
+        select(KbDocument, Attachment)
+        .join(Attachment, Attachment.id == KbDocument.attachment_id)
+        .where(KbDocument.kb_id == kb.id)
+    )
+    total = (
+        await session.execute(
+            select(func.count()).select_from(base.subquery())
+        )
+    ).scalar_one()
+    response.headers["X-Total-Count"] = str(total)
+    if total == 0 or offset >= total:
+        return []
     rows = (
         await session.execute(
-            select(KbDocument, Attachment)
-            .join(Attachment, Attachment.id == KbDocument.attachment_id)
-            .where(KbDocument.kb_id == kb.id)
-            .order_by(KbDocument.created_at.desc())
+            base.order_by(KbDocument.created_at.desc()).offset(offset).limit(limit)
         )
     ).all()
     return [KbDocumentOut.from_row(d, a) for d, a in rows]

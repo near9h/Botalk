@@ -13,6 +13,7 @@ import {
 } from "@/components/ui";
 import { PageShell } from "@/components/Sidebar";
 import { api, AuditLog, User } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 
 /** Compact Label-above-Control wrapper for the audit filter bar.
  *  Keeps label height tight so the whole bar fits in one row on a
@@ -36,15 +37,15 @@ function FilterField({
 }
 
 const RANGES = [
-  { value: "1h", label: "最近 1 小时" },
-  { value: "24h", label: "最近 24 小时" },
-  { value: "7d", label: "最近 7 天" },
-  { value: "30d", label: "最近 30 天" },
-  { value: "all", label: "全部" },
+  { value: "1h", labelKey: "audit.range.1h" },
+  { value: "24h", labelKey: "audit.range.24h" },
+  { value: "7d", labelKey: "audit.range.7d" },
+  { value: "30d", labelKey: "audit.range.30d" },
+  { value: "all", labelKey: "audit.range.all" },
 ];
 
 const ACTION_OPTIONS = [
-  { value: "", label: "全部操作" },
+  { value: "", labelKey: "audit.allActions" },
   { value: "auth.login", label: "auth.login" },
   { value: "auth.login.fail", label: "auth.login.fail" },
   { value: "auth.logout", label: "auth.logout" },
@@ -69,7 +70,7 @@ const ACTION_OPTIONS = [
 ];
 
 const TARGET_OPTIONS = [
-  { value: "", label: "全部目标" },
+  { value: "", labelKey: "audit.allTargets" },
   { value: "auth", label: "auth" },
   { value: "user", label: "user" },
   { value: "bot", label: "bot" },
@@ -80,19 +81,20 @@ const TARGET_OPTIONS = [
 ];
 
 const ROLE_OPTIONS = [
-  { value: "", label: "全部角色" },
+  { value: "", labelKey: "audit.allRoles" },
   { value: "admin", label: "admin" },
   { value: "user", label: "user" },
 ];
 
 const STATUS_OPTIONS = [
-  { value: "", label: "全部状态" },
+  { value: "", labelKey: "audit.allStatuses" },
   { value: "success", label: "success" },
   { value: "failure", label: "failure" },
 ];
 
 export default function AuditAdminPage() {
   const toast = useToast();
+  const { t } = useI18n();
   const [me, setMe] = useState<User | null>(null);
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [total, setTotal] = useState(0);
@@ -153,11 +155,11 @@ export default function AuditAdminPage() {
       if (st_data) setStats(st_data);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "加载审计日志失败", description: msg, variant: "error" });
+      toast.push({ title: t("audit.toast.loadFail"), description: msg, variant: "error" });
     } finally {
       setLoading(false);
     }
-  }, [filter, toast]);
+  }, [filter, toast, t]);
 
   useEffect(() => {
     api.me().then(setMe).catch(() => {});
@@ -179,8 +181,8 @@ export default function AuditAdminPage() {
         <div style={{ padding: 32 }}>
           <EmptyState
             emoji="🔒"
-            title="无权限"
-            description="只有管理员才能访问审计日志"
+            title={t("audit.noPerm.title")}
+            description={t("audit.noPerm.desc")}
           />
         </div>
       </PageShell>
@@ -202,14 +204,14 @@ export default function AuditAdminPage() {
         >
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: -0.5, marginBottom: 6 }}>
-              📜 审计日志
+              {t("audit.title")}
             </h1>
             <p style={{ color: "var(--fg-muted)", fontSize: 14 }}>
-              全量写操作流水：登录、用户增删改、bot/技能/群组/任务等
+              {t("audit.subtitle")}
             </p>
           </div>
           <Button variant="secondary" onClick={load}>
-            ↻ 刷新
+            {t("audit.action.refresh")}
           </Button>
         </div>
 
@@ -217,78 +219,78 @@ export default function AuditAdminPage() {
           <Card style={{ marginBottom: 16, padding: 14 }}>
             <div style={{ display: "flex", gap: 24, flexWrap: "wrap", fontSize: 13 }}>
               <div>
-                最近 24h 总计:{" "}
-                <b style={{ fontSize: 18, color: "var(--accent)" }}>{stats.total_last_24h}</b>
-              </div>
-              <div>
-                Top 操作:{" "}
-                {stats.by_action.slice(0, 4).map((a) => (
-                  <Badge key={a.action} variant="info" style={{ marginLeft: 6 }}>
-                    {a.action} ×{a.count}
-                  </Badge>
-                ))}
-              </div>
-              <div>
-                Top 用户:{" "}
-                {stats.by_actor.slice(0, 4).map((a) => (
-                  <Badge key={a.actor} variant="default" style={{ marginLeft: 6 }}>
-                    {a.actor} ×{a.count}
-                  </Badge>
-                ))}
-              </div>
+              {t("audit.stats.last24hFmt")}{" "}
+              <b style={{ fontSize: 18, color: "var(--accent)" }}>{stats.total_last_24h}</b>
+            </div>
+            <div>
+              {t("audit.stats.topActions")}{" "}
+              {stats.by_action.slice(0, 4).map((a) => (
+                <Badge key={a.action} variant="info" style={{ marginLeft: 6 }}>
+                  {a.action} ×{a.count}
+                </Badge>
+              ))}
+            </div>
+            <div>
+              {t("audit.stats.topActors")}{" "}
+              {stats.by_actor.slice(0, 4).map((a) => (
+                <Badge key={a.actor} variant="default" style={{ marginLeft: 6 }}>
+                  {a.actor} ×{a.count}
+                </Badge>
+              ))}
+            </div>
             </div>
           </Card>
         )}
 
         <Card style={{ marginBottom: 16, padding: 14 }}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-            <FilterField label="时间">
+            <FilterField label={t("audit.label.range")}>
               <Select
                 value={filter.range}
                 onChange={(v) => setFilter({ ...filter, range: String(v), page: 0 })}
-                options={RANGES}
+                options={RANGES.map(r => ({ value: r.value, label: r.labelKey ? t(r.labelKey) : r.value }))}
               />
             </FilterField>
-            <FilterField label="角色">
+            <FilterField label={t("audit.label.role")}>
               <Select
                 value={filter.actor_role}
                 onChange={(v) => setFilter({ ...filter, actor_role: String(v), page: 0 })}
-                options={ROLE_OPTIONS}
+                options={ROLE_OPTIONS.map(r => ({ value: r.value, label: r.labelKey ? t(r.labelKey) : (r as any).label }))}
               />
             </FilterField>
-            <FilterField label="操作">
+            <FilterField label={t("audit.label.action")}>
               <Select
                 value={filter.action}
                 onChange={(v) => setFilter({ ...filter, action: String(v), page: 0 })}
-                options={ACTION_OPTIONS}
+                options={ACTION_OPTIONS.map(r => ({ value: r.value, label: r.labelKey ? t(r.labelKey) : (r as any).label }))}
               />
             </FilterField>
-            <FilterField label="目标">
+            <FilterField label={t("audit.label.target")}>
               <Select
                 value={filter.target_type}
                 onChange={(v) => setFilter({ ...filter, target_type: String(v), page: 0 })}
-                options={TARGET_OPTIONS}
+                options={TARGET_OPTIONS.map(r => ({ value: r.value, label: r.labelKey ? t(r.labelKey) : (r as any).label }))}
               />
             </FilterField>
-            <FilterField label="状态">
+            <FilterField label={t("audit.label.status")}>
               <Select
                 value={filter.status}
                 onChange={(v) => setFilter({ ...filter, status: String(v), page: 0 })}
-                options={STATUS_OPTIONS}
+                options={STATUS_OPTIONS.map(r => ({ value: r.value, label: r.labelKey ? t(r.labelKey) : (r as any).label }))}
               />
             </FilterField>
-            <FilterField label="用户" grow>
+            <FilterField label={t("audit.label.actor")} grow>
               <Input
                 value={filter.actor_name}
                 onChange={(e) => setFilter({ ...filter, actor_name: e.target.value, page: 0 })}
-                placeholder="模糊匹配"
+                placeholder={t("audit.actor.placeholder")}
               />
             </FilterField>
-            <FilterField label="IP" grow>
+            <FilterField label={t("audit.label.ip")} grow>
               <Input
                 value={filter.ip}
                 onChange={(e) => setFilter({ ...filter, ip: e.target.value, page: 0 })}
-                placeholder="模糊匹配"
+                placeholder={t("audit.ip.placeholder")}
               />
             </FilterField>
           </div>
@@ -297,49 +299,49 @@ export default function AuditAdminPage() {
         {loading ? (
           <div style={{ textAlign: "center", padding: 60, color: "var(--fg-subtle)" }}>
             <div style={{ fontSize: 28, marginBottom: 8 }}>⏳</div>
-            加载中…
+            {t("common.loading")}
           </div>
         ) : logs.length === 0 ? (
-          <EmptyState emoji="📜" title="没有日志" description="试试调整筛选条件或时间范围" />
+          <EmptyState emoji="📜" title={t("audit.empty.title")} description={t("audit.empty.desc")} />
         ) : (
           <Card style={{ padding: 0, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
-                <tr style={{ background: "var(--surface-2)", textAlign: "left" }}>
-                  <th style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>时间</th>
-                  <th style={{ padding: "8px 12px" }}>用户</th>
-                  <th style={{ padding: "8px 12px" }}>角色</th>
-                  <th style={{ padding: "8px 12px" }}>操作</th>
-                  <th style={{ padding: "8px 12px" }}>目标</th>
-                  <th style={{ padding: "8px 12px" }}>状态</th>
-                  <th style={{ padding: "8px 12px" }}>IP</th>
-                </tr>
-              </thead>
-              <tbody>
-                {logs.map((it) => {
-                  const isOpen = expanded === it.id;
-                  return (
-                    <Fragment key={it.id}>
-                      <tr
-                        style={{
-                          borderTop: "1px solid var(--border)",
-                          cursor: "pointer",
-                          background: isOpen ? "var(--surface-2)" : undefined,
-                        }}
-                        onClick={() => setExpanded(isOpen ? null : it.id)}
-                      >
-                        <td style={{ padding: "8px 12px", whiteSpace: "nowrap", color: "var(--fg-muted)" }}>
-                          {new Date(it.occurred_at).toLocaleString("zh-CN", { hour12: false })}
-                        </td>
-                        <td style={{ padding: "8px 12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }}>
-                          {it.actor_name || <span style={{ color: "var(--fg-subtle)" }}>匿名</span>}
-                        </td>
-                        <td style={{ padding: "8px 12px" }}>
-                          <Badge variant="default">{it.actor_role}</Badge>
-                        </td>
-                        <td style={{ padding: "8px 12px", fontFamily: "JetBrains Mono, monospace", fontSize: 11 }}>
-                          {it.action}
-                        </td>
+              <tr style={{ background: "var(--surface-2)", textAlign: "left" }}>
+                <th style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>{t("audit.table.time")}</th>
+                <th style={{ padding: "8px 12px" }}>{t("audit.table.user")}</th>
+                <th style={{ padding: "8px 12px" }}>{t("audit.table.role")}</th>
+                <th style={{ padding: "8px 12px" }}>{t("audit.table.action")}</th>
+                <th style={{ padding: "8px 12px" }}>{t("audit.table.target")}</th>
+                <th style={{ padding: "8px 12px" }}>{t("audit.table.status")}</th>
+                <th style={{ padding: "8px 12px" }}>{t("audit.table.ip")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map((it) => {
+                const isOpen = expanded === it.id;
+                return (
+                  <Fragment key={it.id}>
+                    <tr
+                      style={{
+                        borderTop: "1px solid var(--border)",
+                        cursor: "pointer",
+                        background: isOpen ? "var(--surface-2)" : undefined,
+                      }}
+                      onClick={() => setExpanded(isOpen ? null : it.id)}
+                    >
+                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap", color: "var(--fg-muted)" }}>
+                        {new Date(it.occurred_at).toLocaleString("zh-CN", { hour12: false })}
+                      </td>
+                      <td style={{ padding: "8px 12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }}>
+                        {it.actor_name || <span style={{ color: "var(--fg-subtle)" }}>{t("audit.anonymous")}</span>}
+                      </td>
+                      <td style={{ padding: "8px 12px" }}>
+                        <Badge variant="default">{it.actor_role}</Badge>
+                      </td>
+                      <td style={{ padding: "8px 12px", fontFamily: "JetBrains Mono, monospace", fontSize: 11 }}>
+                        {it.action}
+                      </td>
                         <td style={{ padding: "8px 12px" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                             <Badge variant="info" style={{ flexShrink: 0 }}>
@@ -416,7 +418,7 @@ export default function AuditAdminPage() {
             color: "var(--fg-muted)",
           }}
         >
-          <div>共 {total} 条</div>
+          <div>{t("audit.totalFmt", { n: total })}</div>
           <div style={{ display: "flex", gap: 6 }}>
             <Button
               variant="secondary"
@@ -424,7 +426,7 @@ export default function AuditAdminPage() {
               disabled={filter.page === 0}
               onClick={() => setFilter({ ...filter, page: filter.page - 1 })}
             >
-              ← 上一页
+              {t("audit.prev")}
             </Button>
             <Button
               variant="secondary"
@@ -432,7 +434,7 @@ export default function AuditAdminPage() {
               disabled={(filter.page + 1) * filter.page_size >= total}
               onClick={() => setFilter({ ...filter, page: filter.page + 1 })}
             >
-              下一页 →
+              {t("audit.next")}
             </Button>
           </div>
         </div>

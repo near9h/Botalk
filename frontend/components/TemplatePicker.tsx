@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Avatar, avatarColor } from "./ui";
 import { BOT_TEMPLATES, BOT_TEMPLATE_LAYERS, BotTemplate } from "@/lib/botTemplates";
+import { useI18n } from "@/lib/i18n";
 
 interface Props {
   onPick: (t: BotTemplate) => void;
@@ -14,6 +15,7 @@ interface Props {
  * Edit mode ignores this component (handled by parent).
  */
 export function TemplatePicker({ onPick }: Props) {
+  const { t } = useI18n();
   const [activeLayer, setActiveLayer] = useState<BotTemplate["layer"]>("决策层");
   const list = BOT_TEMPLATES.filter((t) => t.layer === activeLayer);
 
@@ -30,9 +32,9 @@ export function TemplatePicker({ onPick }: Props) {
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span style={{ fontSize: 16 }}>🏢</span>
-        <span style={{ fontSize: 13, fontWeight: 600 }}>从模板快速创建</span>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{t("botTemplate.title")}</span>
         <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>
-          · 按组织架构选一个角色，自动填入名称、人设、温度
+          {t("botTemplate.subtitle")}
         </span>
       </div>
 
@@ -76,10 +78,10 @@ export function TemplatePicker({ onPick }: Props) {
           gap: 8,
         }}
       >
-        {list.map((t) => (
+        {list.map((b) => (
           <button
-            key={t.key}
-            onClick={() => onPick(t)}
+            key={b.key}
+            onClick={() => onPick(b)}
             style={{
               display: "flex",
               flexDirection: "column",
@@ -102,19 +104,19 @@ export function TemplatePicker({ onPick }: Props) {
               (e.currentTarget as HTMLButtonElement).style.background = "var(--surface-solid)";
               (e.currentTarget as HTMLButtonElement).style.transform = "translateY(0)";
             }}
-            title={`用「${t.name}」模板创建`}
+            title={t("botTemplate.titleAttrFmt", { name: b.name })}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
-              <Avatar emoji={t.emoji} size={28} color={avatarColor(t.name)} />
+              <Avatar emoji={b.emoji} size={28} color={avatarColor(b.name)} />
               <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>{t.name}</div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{b.name}</div>
                 <div style={{ fontSize: 10, color: "var(--fg-subtle)" }}>
-                  温度 {t.temperature.toFixed(1)}
+                  {t("botTemplate.temperatureFmt", { v: b.temperature.toFixed(1) })}
                 </div>
               </div>
             </div>
             <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.4 }}>
-              {t.tagline}
+              {b.tagline}
             </div>
           </button>
         ))}

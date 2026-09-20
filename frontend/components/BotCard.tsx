@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Avatar, avatarColor, Badge, vendorBadgeVariant, Button } from "./ui";
 import { Bot, vendorLabel, vendorOfModelId } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 
 export function BotCard({
   bot,
@@ -13,6 +14,7 @@ export function BotCard({
   onEdit?: () => void;
   onDelete?: () => void;
 }) {
+  const { t } = useI18n();
   const [hover, setHover] = useState(false);
   const vendor = vendorOfModelId(bot.model);
   const variant = vendorBadgeVariant(vendor);
@@ -62,10 +64,10 @@ export function BotCard({
               <span
                 title={
                   bot.is_system
-                    ? "系统机器人：不可删除，名称/模型不可修改"
+                    ? t("bots.tooltip.system")
                     : bot.is_protected
-                    ? "受保护机器人：不可删除，名称/模型不可修改"
-                    : "🌍 公开机器人：所有用户可见"
+                    ? t("bots.tooltip.protected")
+                    : t("bots.tooltip.public")
                 }
                 style={{
                   fontSize: 10,
@@ -91,7 +93,7 @@ export function BotCard({
                   whiteSpace: "nowrap",
                 }}
               >
-                {bot.is_system ? "🔒 系统" : bot.is_protected ? "🛡 受保护" : "🌍 公开"}
+                {bot.is_system ? t("bots.lockedBadge.system") : bot.is_protected ? t("bots.lockedBadge.protected") : t("bots.lockedBadge.public")}
               </span>
             )}
           </div>
@@ -129,7 +131,7 @@ export function BotCard({
           overflow: "hidden",
         }}
       >
-        {bot.persona || <em style={{ color: "var(--fg-subtle)" }}>未设置人设</em>}
+        {bot.persona || <em style={{ color: "var(--fg-subtle)" }}>{t("bots.empty.persona")}</em>}
       </div>
 
       <div>
@@ -169,19 +171,19 @@ export function BotCard({
       {(onEdit || onDelete || (!bot.is_system && !bot.is_protected && bot.is_public)) && (
         <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
           {onEdit && (
-            <Button size="sm" variant="secondary" onClick={onEdit} style={{ flex: 1 }}>
-              ✏️ 编辑
-            </Button>
-          )}
+              <Button size="sm" variant="secondary" onClick={onEdit} style={{ flex: 1 }}>
+                {t("bots.action.edit")}
+              </Button>
+            )}
           {!onEdit && (
             <Button
               size="sm"
               variant="secondary"
               disabled
-              title="该机器人由他人创建，仅创建者或管理员可编辑"
+              title={t("bots.tooltip.readonly")}
               style={{ flex: 1, cursor: "not-allowed", opacity: 0.7 }}
             >
-              👁 只读
+              {t("bots.readonlyLabel")}
             </Button>
           )}
           {bot.is_system || bot.is_protected ? (
@@ -194,8 +196,8 @@ export function BotCard({
               disabled
               title={
                 bot.is_system
-                  ? "系统机器人不可删除"
-                  : "受保护机器人不可删除"
+                  ? t("bots.toast.systemLocked")
+                  : t("bots.tooltip.protectedLocked")
               }
               style={{ cursor: "not-allowed", opacity: 0.6 }}
             >
@@ -207,7 +209,7 @@ export function BotCard({
                 size="sm"
                 variant="danger"
                 onClick={() => {
-                  if (confirm(`删除机器人「${bot.name}」？`)) onDelete();
+                  if (confirm(t("bots.deleteConfirmFmt", { name: bot.name }))) onDelete();
                 }}
               >
                 🗑

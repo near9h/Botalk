@@ -22,3 +22,7 @@ data/
 # because it holds the project audit / PMP artefacts (see 01-initiation).
 .trae/*
 !.trae/documents/
+backend/.slowapi_wheels/
+
+# Next.js auto-generated ambient typings (regenerated on every `next build`).
+frontend/next-env.d.ts

@@ -7,19 +7,21 @@ import { BotCard } from "@/components/BotCard";
 import { BotFormDialog } from "@/components/BotFormDialog";
 import { api, Bot, User, vendorOfModelId } from "@/lib/api";
 import { BOT_TEMPLATES } from "@/lib/botTemplates";
+import { useI18n } from "@/lib/i18n";
 
-const VENDORS = [
-  { value: "all", label: "全部", icon: "✦" },
-  { value: "openai", label: "OpenAI", icon: "🟢" },
-  { value: "anthropic", label: "Anthropic", icon: "🟠" },
-  { value: "google", label: "Google", icon: "🔵" },
-  { value: "alibaba", label: "Alibaba", icon: "🟧" },
-  { value: "minimax", label: "MiniMax", icon: "🩷" },
-  { value: "other", label: "其他", icon: "⚪" },
+const VENDOR_KEYS: Array<{ value: string; labelKey: string; icon: string }> = [
+  { value: "all", labelKey: "bots.filter.all", icon: "✦" },
+  { value: "openai", labelKey: "bots.filter.openai", icon: "🟢" },
+  { value: "anthropic", labelKey: "bots.filter.anthropic", icon: "🟠" },
+  { value: "google", labelKey: "bots.filter.google", icon: "🔵" },
+  { value: "alibaba", labelKey: "bots.filter.alibaba", icon: "🟧" },
+  { value: "minimax", labelKey: "bots.filter.minimax", icon: "🩷" },
+  { value: "other", labelKey: "bots.filter.other", icon: "⚪" },
 ];
 
 export default function BotsPage() {
   const toast = useToast();
+  const { t } = useI18n();
   const [bots, setBots] = useState<Bot[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -39,7 +41,7 @@ export default function BotsPage() {
       setMe(mine);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "加载机器人失败", description: msg, variant: "error" });
+      toast.push({ title: t("bots.toast.loadFail"), description: msg, variant: "error" });
     } finally {
       setLoading(false);
     }
@@ -65,7 +67,7 @@ export default function BotsPage() {
   const deleteBot = async (b: Bot) => {
     try {
       await api.deleteBot(b.id);
-      toast.push({ title: "已删除", description: `机器人「${b.name}」已移除`, variant: "success" });
+      toast.push({ title: t("common.toast.deleted"), description: t("bots.toast.deletedFmt", { name: b.name }), variant: "success" });
       await refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -73,9 +75,9 @@ export default function BotsPage() {
       // matches the lock badge the user already sees on the card.
       const locked = /403|系统机器人|不可删除/.test(msg);
       toast.push({
-        title: locked ? "系统机器人不可删除" : "删除失败",
+        title: locked ? t("bots.toast.systemLocked") : t("common.toast.deletedFail"),
         description: locked
-          ? `「${b.name}」是系统机器人，由后端自动管理。`
+          ? t("bots.toast.systemLockedDescFmt", { name: b.name })
           : msg,
         variant: "error",
       });
@@ -86,7 +88,7 @@ export default function BotsPage() {
   const seedTeam = async () => {
     if (
       !confirm(
-        `将为「${BOT_TEMPLATES.length}」个角色模板创建机器人（已存在的同名机器人会被跳过）。继续？`,
+        t("bots.seedTeam.confirm", { n: BOT_TEMPLATES.length }),
       )
     )
       return;
@@ -94,19 +96,19 @@ export default function BotsPage() {
     let skipped = 0;
     let failed = 0;
     const existingNames = new Set(bots.map((b) => b.name));
-    for (const t of BOT_TEMPLATES) {
-      if (existingNames.has(t.name)) {
+    for (const tpl of BOT_TEMPLATES) {
+      if (existingNames.has(tpl.name)) {
         skipped++;
         continue;
       }
       try {
         await api.createBot({
-          name: t.name,
-          emoji: t.emoji,
+          name: tpl.name,
+          emoji: tpl.emoji,
           avatar_url: null,
-          persona: t.persona,
-          model: t.preferredModel ?? "gpt-4o",
-          temperature: t.temperature,
+          persona: tpl.persona,
+          model: tpl.preferredModel ?? "gpt-4o",
+          temperature: tpl.temperature,
           params: {},
         });
         created++;
@@ -115,8 +117,8 @@ export default function BotsPage() {
       }
     }
     toast.push({
-      title: "团队阵容创建完成",
-      description: `新增 ${created} · 跳过 ${skipped} · 失败 ${failed}`,
+      title: t("bots.toast.teamCreated"),
+      description: t("bots.toast.teamCreatedDesc", { c: created, s: skipped, f: failed }),
       variant: failed > 0 ? "error" : "success",
     });
     await refresh();
@@ -146,12 +148,12 @@ export default function BotsPage() {
         <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 24 }}>
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: -0.5, marginBottom: 6 }}>
-              机器人管理
+              {t("bots.title")}
             </h1>
             <p style={{ color: "var(--fg-muted)", fontSize: 14 }}>
               {bots.length > 0
-                ? `共 ${bots.length} 位机器人 · 点击卡片编辑人设与模型`
-                : "为不同角色创建专门的 AI 助手"}
+                ? t("bots.subtitle_with_count", { n: bots.length })
+                : t("bots.subtitle_empty")}
             </p>
           </div>
           <Button
@@ -161,15 +163,15 @@ export default function BotsPage() {
             }}
             size="lg"
           >
-            <span style={{ fontSize: 16, marginRight: 4 }}>＋</span> 新建机器人
+            <span style={{ fontSize: 16, marginRight: 4 }}>＋</span> {t("bots.action.new")}
           </Button>
           <Button
             variant="secondary"
             size="lg"
             onClick={seedTeam}
-            title="一次性创建 11 个组织架构角色模板（已存在的同名机器人会跳过）"
+            title={t("bots.seedTeam.title")}
           >
-            🏢 一键创建团队
+            {t("bots.action.seedTeam")}
           </Button>
         </div>
 
@@ -188,11 +190,11 @@ export default function BotsPage() {
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="🔍 搜索名称 / 人设 / 模型…"
+                placeholder={t("bots.search.placeholder")}
               />
             </div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {VENDORS.map((v) => (
+              {VENDOR_KEYS.map((v) => (
                 <button
                   key={v.value}
                   onClick={() => setVendor(v.value)}
@@ -211,7 +213,7 @@ export default function BotsPage() {
                   }}
                 >
                   <span>{v.icon}</span>
-                  {v.label}
+                  {t(v.labelKey)}
                   <span
                     style={{
                       fontSize: 10,
@@ -231,13 +233,13 @@ export default function BotsPage() {
         {loading ? (
           <div style={{ textAlign: "center", padding: 60, color: "var(--fg-subtle)" }}>
             <div style={{ fontSize: 28, marginBottom: 8 }}>⏳</div>
-            加载中…
+            {t("common.loading")}
           </div>
         ) : bots.length === 0 ? (
           <EmptyState
             emoji="🤖"
-            title="还没有机器人"
-            description="新建一位机器人，给它一个 emoji 头像、一个人设、选一个模型，就可以拉进群组讨论了"
+            title={t("bots.empty.title")}
+            description={t("bots.empty.desc")}
             action={
               <Button
                 onClick={() => {
@@ -246,15 +248,15 @@ export default function BotsPage() {
                 }}
                 size="lg"
               >
-                ＋ 创建第一位机器人
+                {t("bots.empty.cta")}
               </Button>
             }
           />
         ) : filtered.length === 0 ? (
           <EmptyState
             emoji="🔍"
-            title="没有匹配的机器人"
-            description="试试调整搜索词或切换过滤标签"
+            title={t("bots.noMatch.title")}
+            description={t("bots.noMatch.desc")}
           />
         ) : (
           <div

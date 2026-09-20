@@ -30,6 +30,7 @@ import { useEffect, useState } from "react";
 import type { CitedRef } from "@/lib/api";
 import { isPreviewableSource, kbDocumentPreviewUrl } from "@/lib/api";
 import { PdfViewerWithBbox, type PdfHighlight } from "./PdfViewerWithBbox";
+import { useI18n } from "@/lib/i18n";
 
 export type CitationChipProps = {
   // Accept `CitedRef | undefined` so callers iterating `refs` don't
@@ -48,7 +49,8 @@ export type CitationChipProps = {
  * a citation from a plain mention or attachment.
  */
 export function CitationChip({ citedRef, onOpen }: CitationChipProps) {
-  const label = shortLabel(citedRef);
+  const { t } = useI18n();
+  const label = shortLabel(citedRef, t("citation.unknownSource"));
   const title = citedRef?.snippet || citedRef?.citation_key || label;
   // Nullish ref → render a non-interactive "未知来源" pill. We don't
   // want to throw `Cannot read properties of undefined` here because
@@ -71,8 +73,7 @@ export function CitationChip({ citedRef, onOpen }: CitationChipProps) {
           border: "1px solid rgba(148, 163, 184, 0.45)",
           whiteSpace: "nowrap",
         }}
-      >
-        📎 {label}
+      >📎 {label}
       </span>
     );
   }
@@ -136,6 +137,7 @@ export function CitationPreviewModal({
 }) {
   const [pdfSrc, setPdfSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { t } = useI18n();
 
   // Esc closes it. Only bind while open so other Esc handlers (modal
   // dialogs elsewhere on the page) keep working when the modal is
@@ -161,7 +163,7 @@ export function CitationPreviewModal({
     if (!isPreviewableSource(citedRef.filename)) {
       setPdfSrc(null);
       setError(
-        `暂不支持在线预览 ${citedRef.filename}（仅 PDF / Word / PPT / Excel 可预览）`,
+        t("citation.unsupportedFmt", { filename: citedRef.filename }),
       );
       return;
     }
@@ -181,7 +183,7 @@ export function CitationPreviewModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={`引用预览：${citedRef.filename || ""}`}
+      aria-label={`${t("citation.preview", { filename: citedRef.filename || "" })}`}
       onClick={onClose}
       style={{
         position: "fixed",
@@ -226,7 +228,7 @@ export function CitationPreviewModal({
         >
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 14, fontWeight: 600, wordBreak: "break-word" }}>
-              📄 {citedRef.filename}
+              {t("citation.preview", { filename: citedRef.filename })}
             </div>
             <div
               style={{
@@ -235,15 +237,15 @@ export function CitationPreviewModal({
                 marginTop: 2,
               }}
             >
-              {citedRef.page ? `第 ${citedRef.page} 页` : "整篇"}
-              {citedRef.para != null ? ` · 段落 ${citedRef.para}` : ""}
-              {citedRef.score ? ` · 相似度 ${(citedRef.score * 100).toFixed(1)}%` : ""}
+              {citedRef.page ? t("citation.pageFmt", { n: citedRef.page }) : t("citation.allPages")}
+              {citedRef.para != null ? t("citation.paraFmt", { n: citedRef.para }) : ""}
+              {citedRef.score ? t("citation.scoreFmt", { p: (citedRef.score * 100).toFixed(1) }) : ""}
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="关闭引用预览"
+            aria-label={t("citation.closeAria")}
             style={{
               border: "1px solid var(--border)",
               background: "var(--surface-2)",
@@ -294,7 +296,7 @@ export function CitationPreviewModal({
                 listStyle: "none",
               }}
             >
-              ▸ 引用片段（LLM 看到的上下文）
+              {t("citation.snippetTitle")}
             </summary>
             <div
               style={{
@@ -319,8 +321,7 @@ export function CitationPreviewModal({
                   lineHeight: 1.4,
                 }}
               >
-                高亮只命中中间这一段；上面 / 下面是 sentence-window
-                拼进来的相邻段落，仅供 LLM 看，不产生额外引用。
+                {t("citation.snippetNote")}
               </div>
             </div>
           </details>
@@ -330,7 +331,7 @@ export function CitationPreviewModal({
           <PdfViewerWithBbox
             src={pdfSrc}
             highlights={highlights}
-            title="原文定位"
+            title={t("citation.viewerTitle")}
             width={840}
           />
         )}
@@ -364,12 +365,12 @@ export function CitationSnippetPopover(_props: {
  * 'citation_key')` at render time. Fall through to the filename or
  * a generic placeholder so the bubble still renders.
  */
-function shortLabel(citedRef: CitedRef | undefined | null): string {
-  if (!citedRef) return "未知来源";
+function shortLabel(citedRef: CitedRef | undefined | null, unknownLabel: string): string {
+  if (!citedRef) return unknownLabel;
   // citation_key looks like `<filename> p.X ¶Y`. We strip the extension
   // off the filename so the chip stays compact.
-  const key = citedRef.citation_key || citedRef.filename || "未知来源";
-  if (!key) return "未知来源";
+  const key = citedRef.citation_key || citedRef.filename || unknownLabel;
+  if (!key) return unknownLabel;
   const m = key.match(/^(.+?)\s+p\.(\d+)\s+¶(\d+)/);
   if (m) {
     const name = (m[1] || "").replace(/\.[a-z0-9]+$/i, "");

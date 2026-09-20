@@ -26,6 +26,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { md } from "@/lib/markdown";
 import { AttachmentMeta } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 
 type Props = {
   attachment: AttachmentMeta;
@@ -57,6 +58,13 @@ function formatBytes(n: number | undefined): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(2)} MB`;
 }
+
+// Sentinel values used to track fetch status without leaning on the
+// user-visible Chinese string. The drawer cares about three phases:
+// still loading, succeeded, or failed. We carry those as strings and
+// map them to the right t() at render time.
+const ATTACH_LOADING = "__ATTACH_LOADING__";
+const ATTACH_FAILED = "__ATTACH_FAILED__";
 
 /** Wrap rendered HTML in a minimal page that follows the host app's
  *  CSS variables, with safe defaults for markdown / report bodies. */
@@ -142,9 +150,10 @@ function wrapHtml(bodyHtml: string): string {
 }
 
 export function AttachmentPreviewDrawer({ attachment, onClose }: Props) {
+  const { t } = useI18n();
   const kind = classify(attachment);
   const [bodyText, setBodyText] = useState<string | null>(
-    kind === "markdown" || kind === "html" || kind === "text" ? "loading" : null,
+    kind === "markdown" || kind === "html" || kind === "text" ? ATTACH_LOADING : null,
   );
   const [imgError, setImgError] = useState(false);
 
@@ -169,7 +178,7 @@ export function AttachmentPreviewDrawer({ attachment, onClose }: Props) {
         if (!cancelled) setBodyText(text);
       })
       .catch((e) => {
-        if (!cancelled) setBodyText(`加载失败：${e instanceof Error ? e.message : String(e)}`);
+        if (!cancelled) setBodyText(`${ATTACH_FAILED}:${e instanceof Error ? e.message : String(e)}`);
       });
     return () => {
       cancelled = true;
@@ -196,7 +205,7 @@ export function AttachmentPreviewDrawer({ attachment, onClose }: Props) {
     );
   } else if (kind === "image") {
     body = imgError ? (
-      <div style={fallbackStyle}>图片加载失败，请直接下载查看。</div>
+      <div style={fallbackStyle}>{t("attachment.imageLoadFail")}</div>
     ) : (
       <div style={{ padding: 24, textAlign: "center", overflow: "auto", height: "100%" }}>
         <img
@@ -208,10 +217,10 @@ export function AttachmentPreviewDrawer({ attachment, onClose }: Props) {
       </div>
     );
   } else if (kind === "markdown") {
-    if (bodyText === "loading") {
-      body = <div style={fallbackStyle}>加载中…</div>;
-    } else if (bodyText && bodyText.startsWith("加载失败")) {
-      body = <div style={fallbackStyle}>{bodyText}</div>;
+    if (bodyText === ATTACH_LOADING) {
+      body = <div style={fallbackStyle}>{t("common.loading")}</div>;
+    } else if (bodyText && bodyText.startsWith(ATTACH_FAILED)) {
+      body = <div style={fallbackStyle}>{t("attachment.loadFailFmt", { err: bodyText.slice(ATTACH_FAILED.length + 1) })}</div>;
     } else {
       // Render via the existing markdown-it singleton, then sandbox.
       // `html:false` keeps bot output from injecting script tags; we
@@ -227,10 +236,10 @@ export function AttachmentPreviewDrawer({ attachment, onClose }: Props) {
       );
     }
   } else if (kind === "html") {
-    if (bodyText === "loading") {
-      body = <div style={fallbackStyle}>加载中…</div>;
-    } else if (bodyText && bodyText.startsWith("加载失败")) {
-      body = <div style={fallbackStyle}>{bodyText}</div>;
+    if (bodyText === ATTACH_LOADING) {
+      body = <div style={fallbackStyle}>{t("common.loading")}</div>;
+    } else if (bodyText && bodyText.startsWith(ATTACH_FAILED)) {
+      body = <div style={fallbackStyle}>{t("attachment.loadFailFmt", { err: bodyText.slice(ATTACH_FAILED.length + 1) })}</div>;
     } else {
       // Raw HTML — sandbox it so the embedded doc can't phish cookies
       // or scrolljack the host app.
@@ -244,8 +253,10 @@ export function AttachmentPreviewDrawer({ attachment, onClose }: Props) {
       );
     }
   } else if (kind === "text") {
-    body = bodyText === "loading" ? (
-      <div style={fallbackStyle}>加载中…</div>
+    body = bodyText === ATTACH_LOADING ? (
+      <div style={fallbackStyle}>{t("common.loading")}</div>
+    ) : bodyText && bodyText.startsWith(ATTACH_FAILED) ? (
+      <div style={fallbackStyle}>{t("attachment.loadFailFmt", { err: bodyText.slice(ATTACH_FAILED.length + 1) })}</div>
     ) : (
       <pre style={preStyle}>{bodyText ?? ""}</pre>
     );
@@ -262,10 +273,10 @@ export function AttachmentPreviewDrawer({ attachment, onClose }: Props) {
             : "📎"}
         </div>
         <div style={{ fontSize: 14, color: "var(--fg)", marginBottom: 6 }}>
-          暂不支持此格式的在线预览
+          {t("attachment.unsupported")}
         </div>
         <div style={{ fontSize: 12, color: "var(--fg-subtle)", marginBottom: 16 }}>
-          请下载后用对应应用打开（Word / WPS / Excel / PowerPoint）
+          {t("attachment.openHint")}
         </div>
         <a
           href={downloadUrl}
@@ -280,7 +291,7 @@ export function AttachmentPreviewDrawer({ attachment, onClose }: Props) {
             fontSize: 14,
           }}
         >
-          下载 {attachment.filename ?? "未命名"}
+          {t("attachment.downloadFmt", { name: attachment.filename ?? t("attachment.untitled") })}
         </a>
       </div>
     );
@@ -291,7 +302,7 @@ export function AttachmentPreviewDrawer({ attachment, onClose }: Props) {
       <div onClick={onClose} style={backdropStyle} aria-hidden />
       <aside
         role="dialog"
-        aria-label={`预览 ${attachment.filename}`}
+        aria-label={t("attachment.previewAriaFmt", { name: attachment.filename ?? "" })}
         style={drawerStyle}
       >
         <header style={headerStyle}>
@@ -311,23 +322,23 @@ export function AttachmentPreviewDrawer({ attachment, onClose }: Props) {
             <div style={{ fontSize: 11, color: "var(--fg-subtle)", marginTop: 2 }}>
               {formatBytes(attachment.size_bytes)}
               {" · "}
-              {attachment.mime_type || "未知类型"}
+              {attachment.mime_type || t("attachment.unknownType")}
             </div>
           </div>
           <a
             href={downloadUrl}
             download
             style={iconBtnStyle}
-            title="下载"
-            aria-label="下载"
+            title={t("attachment.downloadTitle")}
+            aria-label={t("attachment.downloadAria")}
           >
             ⬇
           </a>
           <button
             onClick={onClose}
             style={iconBtnStyle}
-            title="关闭 (ESC)"
-            aria-label="关闭"
+            title={t("attachment.close")}
+            aria-label={t("attachment.closeAria")}
           >
             ✕
           </button>

@@ -74,11 +74,11 @@ export function Sidebar() {
   const changeMyPassword = async () => {
     if (!me) return;
     if (!pwForm.n1 || pwForm.n1.length < 8) {
-      toast.push({ title: "新密码至少 8 位", variant: "error" });
+      toast.push({ title: t("sidebar.changePwd.errTooShort"), variant: "error" });
       return;
     }
     if (pwForm.n1 !== pwForm.n2) {
-      toast.push({ title: "两次输入的新密码不一致", variant: "error" });
+      toast.push({ title: t("sidebar.changePwd.errMismatch"), variant: "error" });
       return;
     }
     setPwBusy(true);
@@ -88,15 +88,15 @@ export function Sidebar() {
         new_password: pwForm.n1,
       });
       toast.push({
-        title: "密码已修改",
-        description: "下次登录请使用新密码",
+        title: t("sidebar.changePwd.ok"),
+        description: t("sidebar.changePwd.okDesc"),
         variant: "success",
       });
       setPwForm({ old: "", n1: "", n2: "" });
       setPwOpen(false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.push({ title: "修改失败", description: msg, variant: "error" });
+      toast.push({ title: t("sidebar.changePwd.fail"), description: msg, variant: "error" });
     } finally {
       setPwBusy(false);
     }
@@ -246,7 +246,7 @@ export function Sidebar() {
                 paddingLeft: 12,
               }}
             >
-              🛡 管理
+              {t("sidebar.admin.label")}
             </div>
           )}
           <nav style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -393,7 +393,7 @@ export function Sidebar() {
               <button
                 type="button"
                 onClick={() => setPwOpen(true)}
-                title="修改密码"
+                title={t("sidebar.changePwd.title")}
                 style={{
                   border: "1px solid var(--border)",
                   background: "transparent",
@@ -405,7 +405,7 @@ export function Sidebar() {
                   whiteSpace: "nowrap",
                 }}
               >
-                🔑 修改密码
+                {t("sidebar.changePwd.button")}
               </button>
               <button
                 type="button"
@@ -431,13 +431,13 @@ export function Sidebar() {
       <Dialog open={pwOpen} onOpenChange={setPwOpen}>
         <DialogContent>
           <DialogHeader
-            title="修改密码"
-            description={`当前用户「${me?.username ?? ""}」自助修改`}
+            title={t("sidebar.changePwd.title")}
+            description={t("sidebar.changePwd.desc", { name: me?.username ?? "" })}
             onClose={() => setPwOpen(false)}
           />
           <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
             <div>
-              <Label>当前密码</Label>
+              <Label>{t("sidebar.changePwd.current")}</Label>
               <Input
                 type="password"
                 value={pwForm.old}
@@ -446,7 +446,7 @@ export function Sidebar() {
               />
             </div>
             <div>
-              <Label>新密码（至少 8 位）</Label>
+              <Label>{t("sidebar.changePwd.new")}</Label>
               <Input
                 type="password"
                 value={pwForm.n1}
@@ -455,7 +455,7 @@ export function Sidebar() {
               />
             </div>
             <div>
-              <Label>确认新密码</Label>
+              <Label>{t("sidebar.changePwd.newConfirm")}</Label>
               <Input
                 type="password"
                 value={pwForm.n2}
@@ -466,10 +466,10 @@ export function Sidebar() {
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={() => setPwOpen(false)}>
-              取消
+              {t("sidebar.changePwd.cancel")}
             </Button>
             <Button onClick={changeMyPassword} disabled={pwBusy}>
-              {pwBusy ? "提交中…" : "保存"}
+              {pwBusy ? t("sidebar.changePwd.submitting") : t("sidebar.changePwd.submit")}
             </Button>
           </DialogFooter>
         </DialogContent>

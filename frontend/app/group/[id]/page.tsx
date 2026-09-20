@@ -1333,12 +1333,12 @@ export default function GroupPage({ params }: { params: { id: string } }) {
                     const label =
                       task.title?.trim() ||
                       (isEmpty
-                        ? "💭 新对话草稿（未发送）"
+                        ? t("group.task.draft")
                         : task.user_prompt?.trim()
                           ? task.user_prompt.length > 60
                             ? `${task.user_prompt.slice(0, 60)}…`
                             : task.user_prompt
-                          : "未命名任务");
+                          : t("group.task.untitled"));
                     const statusIcon =
                       task.status === "running"
                         ? "🟢"
@@ -1391,26 +1391,26 @@ export default function GroupPage({ params }: { params: { id: string } }) {
                             <button
                               onClick={async (e) => {
                                 e.stopPropagation();
-                                const next = prompt("重命名任务", task.title || label);
+                                const next = prompt(t("group.task.renamePrompt"), task.title || label);
                                 if (next != null && next !== task.title) {
                                   try {
                                     // Use share_token rather than the integer id
                                     // so the rename goes through the same
                                     // safe-by-construction URL path the rest
                                     // of the API uses.
-                                    await api.renameTask(task.share_token, next.trim() || "未命名任务");
+                                    await api.renameTask(task.share_token, next.trim() || t("group.task.untitled"));
                                     await refresh();
-                                    if (isActive) setActiveTaskTitle(next.trim() || "未命名任务");
+                                    if (isActive) setActiveTaskTitle(next.trim() || t("group.task.untitled"));
                                   } catch (err) {
                                     toast.push({
-                                      title: "重命名失败",
+                                      title: t("group.task.renameFail"),
                                       description: err instanceof Error ? err.message : String(err),
                                       variant: "error",
                                     });
                                   }
                                 }
                               }}
-                              title="重命名"
+                              title={t("group.task.renameTitle")}
                               style={{
                                 width: 20,
                                 height: 20,
@@ -1427,7 +1427,7 @@ export default function GroupPage({ params }: { params: { id: string } }) {
                             <button
                               onClick={async (e) => {
                                 e.stopPropagation();
-                                if (!confirm(`删除任务「${label}」？该任务下的所有消息会一起删除。`)) return;
+                                if (!confirm(t("group.task.deleteConfirm", { name: label }))) return;
                                 try {
                                   await api.deleteTask(task.id);
                                   if (isActive) {
@@ -1455,13 +1455,13 @@ export default function GroupPage({ params }: { params: { id: string } }) {
                                   await refresh();
                                 } catch (err) {
                                   toast.push({
-                                    title: "删除任务失败",
+                                    title: t("group.task.deleteFail"),
                                     description: err instanceof Error ? err.message : String(err),
                                     variant: "error",
                                   });
                                 }
                               }}
-                              title="删除任务"
+                              title={t("group.task.delete")}
                               style={{
                                 width: 20,
                                 height: 20,

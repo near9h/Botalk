@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "./ui";
 import { api, Attachment, Bot } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 
 export function Composer({
   bots,
@@ -17,6 +18,7 @@ export function Composer({
   streaming: boolean;
   groupId?: string;
 }) {
+  const { t } = useI18n();
   const [value, setValue] = useState("");
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
@@ -164,12 +166,12 @@ export function Composer({
               >
                 📎 <span style={{ fontWeight: 500 }}>{a.filename}</span>
                 <span style={{ color: "var(--fg-subtle)" }}>
-                  {a.content_chars != null ? `${a.content_chars} 字` : ""}
+                  {a.content_chars != null ? t("composer.charsFmt", { n: a.content_chars }) : ""}
                 </span>
                 <button
                   type="button"
                   onClick={() => removeAttachment(a.id)}
-                  aria-label="移除附件"
+                  aria-label={t("composer.removeAria")}
                   style={{
                     width: 18,
                     height: 18,
@@ -195,7 +197,7 @@ export function Composer({
               padding: "0 4px",
             }}
           >
-            上传失败:{uploadError}
+            {t("composer.uploadFailFmt", { err: uploadError })}
           </div>
         )}
 
@@ -212,8 +214,8 @@ export function Composer({
           type="button"
           onClick={() => fileRef.current?.click()}
           disabled={uploading !== null || streaming}
-          title="上传附件(PDF/DOC/图片,自动用 MinerU 转 Markdown 加入对话)"
-          aria-label="上传附件"
+          title={t("composer.uploadTitle")}
+          aria-label={t("composer.uploadAria")}
           style={{
             width: 36,
             height: 36,
@@ -242,7 +244,7 @@ export function Composer({
               send();
             }
           }}
-          placeholder="输入消息… 使用 @机器人名 触发指定机器人  (Enter 发送 / Shift+Enter 换行)"
+          placeholder={t("chat.placeholder.message")}
           rows={1}
           style={{
             width: "100%",
@@ -314,7 +316,7 @@ export function Composer({
       </div>
       {streaming ? (
         <Button variant="danger" onClick={onStop} size="md">
-          ⏹ 停止
+          ⏹ {t("chat.stop")}
         </Button>
       ) : (
         <Button
@@ -322,7 +324,7 @@ export function Composer({
           disabled={!value.trim() && attachments.length === 0}
           size="md"
         >
-          发送 <span style={{ marginLeft: 4, opacity: 0.7, fontSize: 11 }}>⏎</span>
+          {t("chat.send")} <span style={{ marginLeft: 4, opacity: 0.7, fontSize: 11 }}>⏎</span>
         </Button>
       )}
     </div>

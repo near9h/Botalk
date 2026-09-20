@@ -91,9 +91,10 @@ export default function HomePage() {
       setBots(fresh);
       const botIds = fresh.map((b) => b.id);
 
+      const ts = new Date().toLocaleString("zh-CN", { hour12: false });
       const group = await api.createGroup({
-        name: `公司全员讨论 · ${new Date().toLocaleString("zh-CN", { hour12: false })}`,
-        description: `一键建群，包含全部 ${botIds.length} 位角色机器人`,
+        name: t("groups.fullNameFmt", { ts }),
+        description: t("groups.fullDescFmt", { n: botIds.length }),
         mode: "auto",
         max_rounds: 3,
         bot_ids: botIds,
