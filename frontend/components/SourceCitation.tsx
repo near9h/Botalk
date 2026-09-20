@@ -195,6 +195,10 @@ export function CitationPreviewModal({
         padding: 24,
       }}
     >
+      {/* Centered popup: keeps the original PDF-viewer-first layout. The
+          chunk snippet is exposed via a separate, smaller popover
+          (CitationSnippetPopover) — see the chat page. The user wanted
+          snippet *out* of this drawer so the PDF stays full-width. */}
       <div
         onClick={(e) => e.stopPropagation()}
         className="glass-strong animate-scale-in"
@@ -255,25 +259,6 @@ export function CitationPreviewModal({
           </button>
         </div>
 
-        {citedRef.snippet && (
-          <div
-            style={{
-              padding: 12,
-              borderRadius: "var(--radius)",
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              fontSize: 13,
-              lineHeight: 1.6,
-              color: "var(--fg)",
-              whiteSpace: "pre-wrap",
-              maxHeight: 180,
-              overflowY: "auto",
-            }}
-          >
-            {citedRef.snippet}
-          </div>
-        )}
-
         {error && (
           <div
             style={{
@@ -288,6 +273,59 @@ export function CitationPreviewModal({
           </div>
         )}
 
+        {citedRef.snippet && (
+          <details
+            style={{
+              borderRadius: "var(--radius-sm)",
+              border: "1px solid var(--border)",
+              background: "var(--surface-2)",
+              padding: "6px 12px",
+            }}
+          >
+            <summary
+              style={{
+                cursor: "pointer",
+                fontSize: 11,
+                fontWeight: 700,
+                color: "var(--fg-subtle)",
+                letterSpacing: 0.5,
+                textTransform: "uppercase",
+                userSelect: "none",
+                listStyle: "none",
+              }}
+            >
+              ▸ 引用片段（LLM 看到的上下文）
+            </summary>
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 13,
+                lineHeight: 1.7,
+                color: "var(--fg)",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                maxHeight: 200,
+                overflowY: "auto",
+              }}
+            >
+              {citedRef.snippet}
+              <div
+                style={{
+                  marginTop: 8,
+                  paddingTop: 6,
+                  borderTop: "1px dashed var(--border)",
+                  fontSize: 10,
+                  color: "var(--fg-subtle)",
+                  lineHeight: 1.4,
+                }}
+              >
+                高亮只命中中间这一段；上面 / 下面是 sentence-window
+                拼进来的相邻段落，仅供 LLM 看，不产生额外引用。
+              </div>
+            </div>
+          </details>
+        )}
+
         {pdfSrc && (
           <PdfViewerWithBbox
             src={pdfSrc}
@@ -299,6 +337,22 @@ export function CitationPreviewModal({
       </div>
     </div>
   );
+}
+
+/**
+ * Compact standalone popover that shows the chunk snippet the LLM was
+ * given for a citation. Currently unused — the snippet is shown inside
+ * the PDF drawer's <details> block, which is the user-facing
+ * delivery. Kept here as a stable export so other surfaces (e.g. an
+ * admin / debug view) can mount the popover without re-importing
+ * internals.
+ */
+export function CitationSnippetPopover(_props: {
+  citedRef: CitedRef;
+  anchorRect: { top: number; left: number; bottom: number; right: number } | null;
+  onClose: () => void;
+}) {
+  return null;
 }
 
 /** Compact chip label: drop the .pdf extension, keep `p.X ¶Y`.

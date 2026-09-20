@@ -321,3 +321,13 @@ ul { list-style: none; padding: 0; margin: 0; }
   color: var(--fg-muted);
   font-style: italic;
 }
+/* ─── CitationDrawer: side-by-side on wide screens, single column on
+   narrow ones (laptop, portrait tablet). The grid is defined inline on
+   `.citation-drawer-body`; this rule only changes the column count at
+   breakpoints where the two columns would crush each other. */
+@media (max-width: 900px) {
+  .citation-drawer-body {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) !important;
+  }
+}
