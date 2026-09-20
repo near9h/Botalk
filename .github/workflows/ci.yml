@@ -63,7 +63,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e .
-          pip install "pip-audit>=2.7" "bandit>=1.7"
+          pip install "pip-audit>=2.7" "bandit>=1.7" "pytest>=8.0" "pytest-asyncio>=0.23"
 
       - name: Import smoke test
         # Catches broken Alembic chains, import cycles, missing migrations
@@ -74,6 +74,20 @@ jobs:
           from app.orchestrator import msghub, runner
           print("imports OK")
           PY
+
+      - name: Run pytest
+        # Pure-function / unit tests don't need the DB, so we run them
+        # *before* the postgres-backed integration tests. CI infra for
+        # full end-to-end with alembic migrations is a separate TODO;
+        # today the integration tests we have are `tests/test_*` modules
+        # that don't open DB sessions.
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          python -m pytest -q tests/ \
+            --tb=short \
+            --color=yes \
+            -p no:cacheprovider
 
       - name: Run ruff (lint)
         uses: astral-sh/ruff-action@v1
