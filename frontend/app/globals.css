@@ -283,3 +283,41 @@ ul { list-style: none; padding: 0; margin: 0; }
   border-color: var(--accent);
   transform: translateY(-1px);
 }
+
+/* KB citation chip inside chat bubbles. Clicking opens the PDF
+   drawer via the chat-page delegated handler; this CSS just makes
+   the chip look obviously clickable so users discover the affordance.
+   Superscript layout: tiny pill that floats above the baseline like a
+   Wikipedia reference number. */
+.md-body .citation,
+.citation {
+  display: inline-block;
+  padding: 0 5px;
+  margin: 0 1px;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.16);
+  color: #92400E;
+  font-weight: 600;
+  font-size: 0.72em;
+  line-height: 1.6;
+  vertical-align: super;
+  cursor: pointer;
+  transition: all var(--transition);
+  user-select: none;
+}
+.md-body .citation:hover,
+.citation:hover {
+  background: rgba(245, 158, 11, 0.28);
+  color: #78350F;
+  transform: translateY(-1px);
+}
+/* Orphan chip (citation key didn't match any chunk_id from RAG) —
+   still rendered so the LLM can't dodge, but visually grayed out so
+   the user knows there's no PDF to jump to. */
+.md-body .citation--orphan,
+.citation--orphan {
+  cursor: default;
+  background: rgba(148, 163, 184, 0.18);
+  color: var(--fg-muted);
+  font-style: italic;
+}

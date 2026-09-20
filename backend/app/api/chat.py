@@ -141,6 +141,22 @@ async def stream_chat(
         },
     )
     await session.commit()
+    # Persist the user turn immediately so /api/messages returns it on
+    # page refresh. Before this, `run_start` only existed in the SSE
+    # stream — refreshing the page dropped the user's prompt from view
+    # because nothing had written a `role='user'` row yet.
+    if payload.prompt:
+        try:
+            await save_message(
+                session,
+                run_id=run.id,
+                group_id=group_id_int,
+                role="user",
+                content=payload.prompt,
+                attachments=payload.attachment_ids,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[chat] save user_message failed: {exc}")
 
     async def event_gen():
         # 重新拿一个干净的 session 用于 streaming，避免与请求 session 抢资源

@@ -28,8 +28,12 @@ export type Bot = {
   scope?: "system" | "user";
   // 公开分享：私有 bot 标记后所有用户可见
   is_public?: boolean;
-  // Stage 3 / Stage 5: ids of knowledge bases this bot has mounted.
+  // Wire-facing tokens of knowledge bases this bot has mounted.
   // Surfaced by `GET /api/bots` and editable via PATCH /api/bots/{id}.
+  // KB rows on the server still link via integer FK (`kb_ids`); we
+  // keep that list around for callers that want to follow the join,
+  // but the URL/UI surface uses `kb_public_ids` exclusively.
+  kb_public_ids?: string[];
   kb_ids?: number[];
   created_at: string;
 };
@@ -139,7 +143,9 @@ export type BotSkill = {
 
 export type CitedRef = {
   chunk_id: number;
-  kb_id: number;
+  // Wire-facing KB token. Mirrors `KnowledgeBase.public_id`; the
+  // chat UI uses this to fetch `/api/kb/{public_id}/chunks/{id}`.
+  kb_id: string;
   kb_doc_id: number;
   filename: string;
   page: number | null;
@@ -154,11 +160,17 @@ export type CitedRef = {
 };
 
 export type KnowledgeBase = {
+  // Integer PK — kept around for the KB list sort + debugging.
+  // Wire-facing routes should use `public_id` exclusively.
   id: number;
+  public_id: string;
   name: string;
-  description: string;
+  description: string | null;
   is_public: boolean;
   ragflow_dataset_id: string | null;
+  // Number of documents that finished ingest (status="ready"). Drives
+  // the "本地检索就绪" badge in the KB list + detail page.
+  ready_doc_count?: number;
   created_at: string;
 };
 
@@ -166,6 +178,11 @@ export type KbDocument = {
   id: number;
   kb_id: number;
   attachment_id: number;
+  // wire-facing id used by /api/attachments/{public_id}/download. KB
+  // uploads made before the public_id migration may still come back
+  // null — fall back to attachment_id in that case (legacy downloads
+  // stopped working with the migration).
+  public_id?: string | null;
   filename: string;
   mime_type: string;
   size_bytes: number;
@@ -546,26 +563,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  getKb: (kbId: number) => request<KnowledgeBase>(`/api/kb/${kbId}`),
-  deleteKb: (kbId: number) =>
+  getKb: (kbId: string) => request<KnowledgeBase>(`/api/kb/${kbId}`),
+  deleteKb: (kbId: string) =>
     request<void>(`/api/kb/${kbId}`, { method: "DELETE" }),
-  listKbDocuments: (kbId: number) =>
+  listKbDocuments: (kbId: string) =>
     request<KbDocument[]>(`/api/kb/${kbId}/documents`),
-  getKbDocument: (kbId: number, docId: number) =>
+  getKbDocument: (kbId: string, docId: number) =>
     request<KbDocument>(`/api/kb/${kbId}/documents/${docId}`),
-  deleteKbDocument: (kbId: number, docId: number) =>
+  deleteKbDocument: (kbId: string, docId: number) =>
     request<void>(`/api/kb/${kbId}/documents/${docId}`, {
       method: "DELETE",
     }),
-  getKbChunk: (kbId: number, chunkId: number) =>
+  getKbChunk: (kbId: string, chunkId: number) =>
     request<KbChunk>(`/api/kb/${kbId}/chunks/${chunkId}`),
   // Stage 5 fix: per-doc chunk listing (drives the KB-detail page's
   // chunk preview). Added in the same backend route pass as the
   // single-chunk endpoint; the route is order-sensitive so the
   // server-side docstring explains why.
-  listKbDocumentChunks: (kbId: number, docId: number) =>
+  listKbDocumentChunks: (kbId: string, docId: number) =>
     request<KbChunk[]>(`/api/kb/${kbId}/documents/${docId}/chunks`),
-  uploadKbDocument: (kbId: number, file: File) => {
+  uploadKbDocument: (kbId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
     return fetch(`${API_BASE}/api/kb/${kbId}/documents`, {

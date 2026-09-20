@@ -263,24 +263,39 @@ export function renderMessageWithMentions(
     return `@@MENTION_${idx}@@`;
   });
 
-  // Replace `[doc: key]` markers with citation chips. We always emit a
-  // chip (even when the chunk_id isn't in the index) so the LLM can't
-  // dodge citations — unindexed chips become "📎 key" with no click
-  // handler and no bbox overlay, which is the right failure mode (the
-  // user sees something obviously missing rather than silent text).
+  // Replace `[doc: key]` markers with citation chips. The chip is now a
+  // compact superscript index `[1]`, `[2]`... assigned in the order the
+  // refs first appear in the text. This keeps the inline answer tidy
+  // (no more long `📎 filename p.X ¶Y` strings) while preserving the
+  // exact same data attributes the chat-page click handler already
+  // dispatches on (`data-citation-chunk-id`, `data-citation-kb-id`, …)
+  // so the right-side drawer still opens the matching chunk.
+  //
+  // When the citation key isn't in `citationIndex` (i.e. the LLM
+  // echoed something we can't resolve) we emit a small `?` superscript
+  // instead of a long string — the user sees something obviously
+  // missing, but the bubble body stays compact.
+  let citeOrdinal = 0;
+  const ordinalByKey = new Map<number, number>();
   const withCitations = withPlaceholders.replace(CITATION_PATTERN, (full, rawKey) => {
     const key = String(rawKey).trim();
     const ref = citationIndex.get(key);
     const idx = placeholders.length;
     if (ref) {
+      // Stable ordinal per unique chunk: same chunk_id in the same
+      // bubble always shows the same number, even if cited twice.
+      let n = ordinalByKey.get(ref.chunk_id);
+      if (n == null) {
+        citeOrdinal += 1;
+        n = citeOrdinal;
+        ordinalByKey.set(ref.chunk_id, n);
+      }
       placeholders.push(
-        `<span class="citation" data-citation-chunk-id="${ref.chunk_id}" data-citation-key="${escapeAttr(key)}" data-citation-kb-id="${ref.kb_id}" data-citation-doc-id="${ref.kb_doc_id}" title="${escapeAttr(ref.snippet || key)}">📎 ${escapeHtml(key)}</span>`,
+        `<sup class="citation" data-citation-chunk-id="${ref.chunk_id}" data-citation-key="${escapeAttr(key)}" data-citation-kb-id="${ref.kb_id}" data-citation-doc-id="${ref.kb_doc_id}" title="${escapeAttr(ref.snippet || key)}">[${n}]</sup>`,
       );
     } else {
-      // Fallback: chip with no chunk_id. ChatBubble's click handler
-      // silently no-ops; the user still sees the citation in-line.
       placeholders.push(
-        `<span class="citation citation--orphan" data-citation-key="${escapeAttr(key)}" title="${escapeAttr(key)}">📎 ${escapeHtml(key)}</span>`,
+        `<sup class="citation citation--orphan" data-citation-key="${escapeAttr(key)}" title="${escapeAttr(key)}">?</sup>`,
       );
     }
     return `@@MENTION_${idx}@@`;

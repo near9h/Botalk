@@ -24,9 +24,123 @@ import { ChatBubble, ChatBubbleData } from "@/components/ChatBubble";
 import { Composer } from "@/components/Composer";
 import { GroupWizard } from "@/components/GroupWizard";
 import { CitationDrawerProvider } from "@/components/CitationDrawerContext";
+import { useCitationDrawer } from "@/components/CitationDrawerContext";
 import { CitationDrawerSurface } from "@/components/SourceCitation";
 import { api, Attachment, AttachmentMeta, Bot, CitedRef, Group, GroupPolicy, Message, Run, Task, User, streamChat, vendorLabel, vendorOfModelId } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
+
+/**
+ * MessagesList — inner component that lives inside
+ * `<CitationDrawerProvider>`, so it can call `useCitationDrawer()` to
+ * install a delegated click handler on the messages container.
+ *
+ * Why we delegate instead of attaching one listener per ChatBubble:
+ *   - The chat page streams one `message_end` per bot, so when the
+ *     bubble re-renders with its `citedRefs`, the per-bubble
+ *     `useEffect` had a window where `bodyRef.current` was stale.
+ *   - One container-level listener with a `citedByChunk` index
+ *     rebuilt on every `messages` update handles every bubble
+ *     identically and avoids the race entirely.
+ */
+function MessagesList({
+  messages,
+  bots,
+  memberBots,
+  streaming,
+  onRetry,
+  emptyTitle,
+  emptyDesc,
+  emptyDescNoBots,
+}: {
+  messages: ChatBubbleData[];
+  bots: Bot[];
+  memberBots: Bot[];
+  streaming: boolean;
+  onRetry: (bubble: ChatBubbleData) => void;
+  emptyTitle: string;
+  emptyDesc: string;
+  emptyDescNoBots: string;
+}) {
+  const { openCitation } = useCitationDrawer();
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const endRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root) return;
+    const citedByChunk = new Map<number, CitedRef>();
+    for (const m of messages) {
+      if (m.citedRefs) {
+        for (const r of m.citedRefs) {
+          if (r && typeof r.chunk_id === "number") {
+            citedByChunk.set(r.chunk_id, r);
+          }
+        }
+      }
+    }
+    const handler = (e: Event) => {
+      const t0 = e.target as HTMLElement | null;
+      const target = t0?.closest(".citation");
+      if (!target) return;
+      const cid = Number(target.getAttribute("data-citation-chunk-id"));
+      // eslint-disable-next-line no-console
+      console.log("[citation click]", { cid, hasRef: citedByChunk.has(cid), bbox: target.getAttribute("data-citation-key") });
+      if (!Number.isFinite(cid)) return;
+      const ref = citedByChunk.get(cid);
+      if (ref) openCitation(ref);
+    };
+    root.addEventListener("click", handler);
+    return () => root.removeEventListener("click", handler);
+  }, [messages, openCitation]);
+
+  // Auto-scroll to the newest message. Lives here (not the parent)
+  // so the inner component is fully self-contained; the parent just
+  // hands it the latest `messages` array.
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        flex: 1,
+        minHeight: 0,
+        overflowY: "auto",
+        padding: 24,
+        display: "flex",
+        flexDirection: "column",
+        gap: 14,
+        scrollBehavior: "smooth",
+      }}
+    >
+      {messages.length === 0 ? (
+        <EmptyState
+          emoji="💭"
+          title={emptyTitle}
+          description={memberBots.length === 0 ? emptyDescNoBots : emptyDesc}
+        />
+      ) : (
+        messages.map((m) => {
+          const bot = m.botId ? bots.find((b) => b.id === m.botId) : undefined;
+          return (
+            <ChatBubble
+              key={m.id}
+              bubble={m}
+              bot={bot}
+              knownBots={memberBots}
+              onRetry={
+                m.role === "user" && !streaming
+                  ? () => onRetry(m)
+                  : undefined
+              }
+            />
+          );
+        })
+      )}
+      <div ref={endRef} />
+    </div>
+  );
+}
 
 export default function GroupPage({ params }: { params: { id: string } }) {
   const groupId = String(params.id);
@@ -73,6 +187,8 @@ export default function GroupPage({ params }: { params: { id: string } }) {
   const [bannerOpen, setBannerOpen] = useState(false);
   const abortRef = useRef<(() => void) | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // (messagesContainerRef moved into <MessagesList> so it sits under
+  // the CitationDrawerProvider and can call useCitationDrawer.)
 
   // Initial view: group + bots + task list, then resolve which task to
   // open. Priority order:
@@ -161,7 +277,15 @@ export default function GroupPage({ params }: { params: { id: string } }) {
             botId: m.bot_id,
             botName: b.find((x) => x.id === m.bot_id)?.name ?? null,
             content: m.content,
+            // Persist `created_at` so the bubble footer ("HH:MM" + retry)
+            // lights up after a page refresh — otherwise the user bubble
+            // shows up empty of metadata.
+            createdAt: m.created_at,
             attachments: metas.length ? metas : undefined,
+            // Re-hydrate the citation refs so the inline [doc: ...] markers
+            // resolve to chips on refresh, not just inside the current
+            // session. Empty array for `user` rows.
+            citedRefs: m.cited_refs && m.cited_refs.length > 0 ? m.cited_refs : undefined,
           };
         }),
       );
@@ -284,9 +408,13 @@ export default function GroupPage({ params }: { params: { id: string } }) {
     }
   };
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  // Auto-scroll and citation-click delegation both moved into the
+  // <MessagesList> inner component (it lives under the
+  // CitationDrawerProvider so it can call useCitationDrawer). The
+  // parent's `messagesEndRef` is now unused; kept around in case a
+  // future feature needs to programmatically scroll from outside the
+  // list.
+
 
   const send = (prompt: string, attachments: Attachment[]) => {
     if (streaming) return;
@@ -294,6 +422,9 @@ export default function GroupPage({ params }: { params: { id: string } }) {
       id: makeId(),
       role: "user",
       content: prompt,
+      // Stamp at submit time so the "HH:MM" footer lights up
+      // immediately, even before the server confirms via run_start.
+      createdAt: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, userBubble]);
     setStreaming(true);
@@ -367,6 +498,12 @@ export default function GroupPage({ params }: { params: { id: string } }) {
             const incomingRefs = Array.isArray(d.cited_refs)
               ? (d.cited_refs as CitedRef[])
               : undefined;
+            // Server-side timestamp from the SSE event. Falls back to
+            // "now" if the backend omitted it (older orchestrator).
+            const incomingTs =
+              typeof d.created_at === "string"
+                ? (d.created_at as string)
+                : new Date().toISOString();
             setMessages((prev) =>
               prev.map((m) => {
                 if (m.streaming && m.botId === incomingBotId) {
@@ -376,6 +513,7 @@ export default function GroupPage({ params }: { params: { id: string } }) {
                     streaming: false,
                     attachments: incomingAtts ?? m.attachments,
                     citedRefs: incomingRefs ?? m.citedRefs,
+                    createdAt: incomingTs,
                   };
                 }
                 return m;
@@ -470,6 +608,8 @@ export default function GroupPage({ params }: { params: { id: string } }) {
             botId: m.bot_id,
             botName: bots.find((x) => x.id === m.bot_id)?.name ?? null,
             content: m.content,
+            createdAt: m.created_at,
+            citedRefs: m.cited_refs && m.cited_refs.length > 0 ? m.cited_refs : undefined,
           })),
         );
         setHistoryOpen(false);
@@ -1015,40 +1155,18 @@ export default function GroupPage({ params }: { params: { id: string } }) {
           )}
 
           {/* Messages */}
-          <div
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflowY: "auto",
-              padding: 24,
-              display: "flex",
-              flexDirection: "column",
-              gap: 14,
-              // Custom scrollbar already defined globally; this just ensures
-              // it shows up once content exceeds the panel height.
-              scrollBehavior: "smooth",
-            }}
-          >
-            {messages.length === 0 ? (
-              <EmptyState
-                emoji="💭"
-                title={t("group.empty.title")}
-                description={
-                  memberBots.length === 0
-                    ? t("group.empty.desc_no_bots")
-                    : t("group.empty.desc")
-                }
-              />
-            ) : (
-              messages.map((m) => {
-                const bot = m.botId ? bots.find((b) => b.id === m.botId) : undefined;
-                return (
-                  <ChatBubble key={m.id} bubble={m} bot={bot} knownBots={memberBots} />
-                );
-              })
-            )}
-            <div ref={messagesEndRef} />
-          </div>
+          <MessagesList
+            messages={messages}
+            bots={bots}
+            memberBots={memberBots}
+            streaming={streaming}
+            emptyTitle={t("group.empty.title")}
+            emptyDesc={t("group.empty.desc")}
+            emptyDescNoBots={t("group.empty.desc_no_bots")}
+            onRetry={(bubble) =>
+              bubble.role === "user" ? send(bubble.content, []) : undefined
+            }
+          />
 
           {/* Composer (pinned to bottom; never scrolls with messages) */}
           <div
@@ -1312,6 +1430,8 @@ export default function GroupPage({ params }: { params: { id: string } }) {
                                           botId: m.bot_id,
                                           botName: bots.find((x) => x.id === m.bot_id)?.name ?? null,
                                           content: m.content,
+                                          createdAt: m.created_at,
+                                          citedRefs: m.cited_refs && m.cited_refs.length > 0 ? m.cited_refs : undefined,
                                         })),
                                       );
                                     } else {

@@ -10,6 +10,20 @@ import { CitationDrawer, CitationDrawerSurface } from "./SourceCitation";
 import { useCitationDrawer } from "./CitationDrawerContext";
 import { CitedRefsFooter } from "./CitedRefsFooter";
 
+/**
+ * Format an ISO timestamp into a compact "HH:MM" (24-hour) string
+ * for the bubble footer. We deliberately drop the date — chat
+ * history is per-task and rarely spans a day, so the date adds
+ * noise. Returns an empty string when the input is missing/invalid
+ * so the parent can render `null` cleanly.
+ */
+function formatBubbleTime(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
 export type AttachmentMeta = {
   id: number;
   // Unguessable download token (see Attachment.public_id on backend).
@@ -27,6 +41,13 @@ export type ChatBubbleData = {
   botName?: string | null;
   content: string;
   streaming?: boolean;
+  // ISO timestamp from the SSE event. Used to render a "HH:MM" line
+  // under each bubble and to back the "重试" button on user prompts.
+  createdAt?: string | null;
+  // The original user prompt text this bubble is a reply to. Set on
+  // the FIRST bot turn after a user prompt so the "重试" button can
+  // re-send it without re-rendering the whole thread.
+  promptSnapshot?: string | null;
   // Bot-authored attachment metadata. UI renders a download card per
   // entry. Each entry's body is served by
   // GET /api/attachments/{id}/download.
@@ -49,11 +70,18 @@ export function ChatBubble({
   bubble,
   bot,
   knownBots = [],
+  onRetry,
 }: {
   bubble: ChatBubbleData;
   bot?: Bot;
   /** All bots in the group — used to resolve @mentions inside the message. */
   knownBots?: Bot[];
+  /**
+   * Re-send the original user prompt. Only attached on user bubbles;
+   * clicking the retry button fires `onRetry(prompt)` so the chat
+   * page can pop a new SSE stream with the same text.
+   */
+  onRetry?: (prompt: string) => void;
 }) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
@@ -83,26 +111,13 @@ export function ChatBubble({
     return () => root.removeEventListener("click", handler);
   }, [bubble.id]);
 
-  // Stage 4: citation chip clicks. Look up the chunk_id embedded on
-  // the chip's `data-citation-chunk-id` attribute, find it in
-  // `bubble.citedRefs`, and open the drawer. Orphan chips (no
-  // chunk_id) silently no-op — the user still sees the inline text.
-  useEffect(() => {
-    const root = bodyRef.current;
-    if (!root || !bubble.citedRefs || bubble.citedRefs.length === 0) return;
-    const idxByChunk = new Map<number, CitedRef>();
-    for (const r of bubble.citedRefs) idxByChunk.set(r.chunk_id, r);
-    const handler = (e: Event) => {
-      const target = (e.target as HTMLElement)?.closest(".citation");
-      if (!target) return;
-      const cid = Number(target.getAttribute("data-citation-chunk-id"));
-      if (!Number.isFinite(cid)) return;
-      const ref = idxByChunk.get(cid);
-      if (ref) openCitation(ref);
-    };
-    root.addEventListener("click", handler);
-    return () => root.removeEventListener("click", handler);
-  }, [bubble.id, bubble.citedRefs, openCitation]);
+  // Citation chip clicks are handled by the delegated listener on the
+  // <MessagesList> container in the chat page (it walks every bubble's
+  // `citedRefs` into a single `citedByChunk` index). Wiring a second
+  // per-bubble listener here would cause double-open — and historically
+  // caused the "click does nothing" bug because of stale `bodyRef`
+  // snapshots during the message_end → render race. See
+  // `MessagesList`'s comment for the full rationale.
 
   if (bubble.role === "system") {
     return (
@@ -142,25 +157,83 @@ export function ChatBubble({
   }
 
   if (bubble.role === "user") {
+    const ts = formatBubbleTime(bubble.createdAt);
     return (
       <div
-        className={bubble.streaming ? "streaming" : ""}
         style={{
           alignSelf: "flex-end",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-end",
+          gap: 4,
           maxWidth: "70%",
-          padding: "10px 14px",
-          borderRadius: 16,
-          background:
-            "linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%)",
-          color: "white",
-          boxShadow: "0 4px 14px rgba(167, 139, 250, 0.30)",
-          fontSize: 13.5,
-          lineHeight: 1.55,
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
         }}
       >
-        {bubble.content}
+        <div
+          className={bubble.streaming ? "streaming" : ""}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 16,
+            background:
+              "linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%)",
+            color: "white",
+            boxShadow: "0 4px 14px rgba(167, 139, 250, 0.30)",
+            fontSize: 13.5,
+            lineHeight: 1.55,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
+        >
+          {bubble.content}
+        </div>
+        {/* Bubble footer: time + retry. Time appears under the bubble
+            (right-aligned); retry icon appears next to the time so the
+            row stays compact. Hidden while streaming — the timestamp
+            wouldn't have landed yet. */}
+        {!bubble.streaming && (ts || onRetry) && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              paddingRight: 4,
+              fontSize: 11,
+              color: "var(--fg-subtle)",
+            }}
+          >
+            {ts && <span>{ts}</span>}
+            {onRetry && bubble.content && (
+              <button
+                type="button"
+                onClick={() => onRetry(bubble.content)}
+                title="重新发送这条消息"
+                aria-label="重试"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 3,
+                  padding: "2px 6px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "var(--surface-2)",
+                  color: "var(--fg-muted)",
+                  fontSize: 11,
+                  cursor: "pointer",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "var(--surface)";
+                  e.currentTarget.style.color = "var(--accent)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "var(--surface-2)";
+                  e.currentTarget.style.color = "var(--fg-muted)";
+                }}
+              >
+                ↻ 重试
+              </button>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -230,6 +303,20 @@ export function ChatBubble({
         )}
         {!bubble.streaming && bubble.citedRefs && bubble.citedRefs.length > 0 && (
           <CitedRefsFooter refs={bubble.citedRefs} onOpen={openCitation} />
+        )}
+        {/* Bot bubble footer: timestamp only (no retry — re-sending the
+            user prompt is what "重试" means, and that's already wired
+            to the user bubble). */}
+        {!bubble.streaming && bubble.createdAt && (
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--fg-subtle)",
+              paddingLeft: 4,
+            }}
+          >
+            {formatBubbleTime(bubble.createdAt)}
+          </div>
         )}
       </div>
     </div>
