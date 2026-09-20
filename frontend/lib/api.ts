@@ -328,7 +328,40 @@ export const api = {
       credentials: "include" as RequestCredentials,
     }),
 
-  listBots: () => request<Bot[]>("/api/bots"),
+  /**
+   * 列机器人（GET /api/bots）。可选参数：
+   *   q      — 名称模糊匹配
+   *   limit  — 每页条数（默认 50，最大 200）
+   *   offset — 跳过条数
+   * 不传时按后端默认行为（取所有可见 bot）走，保持向后兼容。
+   * 想读 X-Total-Count（用于分页 UI）时用 `listBotsWithMeta`。
+   */
+  listBots: (params?: { q?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.q) qs.set("q", params.q);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    if (params?.offset != null) qs.set("offset", String(params.offset));
+    const tail = qs.toString();
+    return request<Bot[]>(`/api/bots${tail ? `?${tail}` : ""}`);
+  },
+  /** 带响应头的版本：返回 `{items, total}`，`total` 取自 X-Total-Count。 */
+  listBotsWithMeta: async (params?: { q?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.q) qs.set("q", params.q);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    if (params?.offset != null) qs.set("offset", String(params.offset));
+    const tail = qs.toString();
+    const res = await fetch(`${API_BASE}/api/bots${tail ? `?${tail}` : ""}`, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!res.ok) {
+      throw new Error(`${res.status} ${res.statusText}: ${await res.text()}`);
+    }
+    const items = (await res.json()) as Bot[];
+    const total = Number(res.headers.get("X-Total-Count") ?? items.length);
+    return { items, total };
+  },
   // `is_protected` defaults server-side; allow callers to omit it.
   createBot: (
     body: Omit<Bot, "id" | "created_at" | "is_system" | "is_protected" | "owner_id" | "scope"> & {

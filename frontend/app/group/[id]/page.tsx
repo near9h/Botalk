@@ -958,6 +958,9 @@ export default function GroupPage({ params }: { params: { id: string } }) {
               >
                 {t("group.addBot")}
               </div>
+              {/* 翻页 + 搜索模式：当机器人数量超出浏览舒适区（≈20）时按需
+                  翻页拉取，避免一次性塞进 DOM 卡顿。`labelOf` 把后端 raw
+                  字段映射成 SelectOption 的 value/label/badge。 */}
               <Select
                 value=""
                 onChange={(v) => {
@@ -965,15 +968,28 @@ export default function GroupPage({ params }: { params: { id: string } }) {
                   if (n) addMember(n);
                 }}
                 placeholder={t("group.addBotPlaceholder")}
-                options={otherBots.map((b) => ({
-                  value: String(b.id),
-                  label: `${b.emoji} ${b.name}`,
-                  badge: (
-                    <Badge variant={vendorBadgeVariant(vendorOfModelId(b.model))} style={{ fontSize: 10 }}>
-                      {b.model}
-                    </Badge>
-                  ),
-                }))}
+                options={[]}  /* paginated 模式下不走 options */
+                searchable
+                pageSize={20}
+                fetchPage={async (q, offset, limit) => {
+                  // listBotsWithMeta 已经在响应头里塞 X-Total-Count。
+                  const { items, total } = await api.listBotsWithMeta({
+                    q: q || undefined, limit, offset,
+                  });
+                  return { items, total };
+                }}
+                labelOf={(raw) => {
+                  const b = raw as Bot;
+                  return {
+                    value: String(b.id),
+                    label: `${b.emoji} ${b.name}`,
+                    badge: (
+                      <Badge variant={vendorBadgeVariant(vendorOfModelId(b.model))} style={{ fontSize: 10 }}>
+                        {b.model}
+                      </Badge>
+                    ),
+                  };
+                }}
               />
             </div>
           )}

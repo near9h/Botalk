@@ -10,9 +10,9 @@ RBAC:
 import time
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -85,24 +85,60 @@ async def _resolve_visible_kb(
 
 @router.get("", response_model=list[BotOut])
 async def list_bots(
+    response: Response,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
+    q: str | None = Query(
+        default=None, max_length=64,
+        description="按机器人名称 icontains 过滤。前后空白会被剥除后匹配。",
+    ),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> list[BotOut]:
-    """admin 全集; user 仅看 system + 自己 owner + 别人分享的 (is_public) bot。"""
+    """admin 全集; user 仅看 system + 自己 owner + 别人分享的 (is_public) bot。
+
+    支持简单分页 + 名称搜索（不分大小写）。响应头里附带 `X-Total-Count`，
+    前端的下拉 / 列表据此决定要不要继续翻页。
+    """
+    # visibility filter — 先把可见 id 集取出来，count 与 fetch 复用同一份条件，
+    # 这样 limit/offset 不会把总数算错。
     if user.role == "admin":
-        result = await session.execute(select(Bot).order_by(Bot.id))
+        visibility = select(Bot.id)
     else:
-        result = await session.execute(
-            select(Bot)
-            .where(
-                or_(
-                    Bot.scope == "system",
-                    Bot.owner_id == user.id,
-                    Bot.is_public.is_(True),
-                )
+        visibility = select(Bot.id).where(
+            or_(
+                Bot.scope == "system",
+                Bot.owner_id == user.id,
+                Bot.is_public.is_(True),
             )
-            .order_by(Bot.id)
         )
+
+    base_q = (
+        select(Bot)
+        .where(Bot.id.in_(visibility.subquery()))
+        .order_by(Bot.id)
+    )
+
+    # `q` 是「按 name 过滤」的最小可用形态。`icontains` 走 ILIKE，对中文按字节
+    # 匹配，已经够应付「输入『人事』找到『人事负责人』」这种需求；上 cover_ 后
+    # 也只在名称里加 LIKE，复杂全文搜索不在当前范围。
+    name_q = (q or "").strip()
+    if name_q:
+        base_q = base_q.where(Bot.name.ilike(f"%{name_q}%"))
+
+    total = (
+        await session.execute(
+            select(func.count()).select_from(base_q.subquery())
+        )
+    ).scalar_one()
+    if response is not None:
+        response.headers["X-Total-Count"] = str(total)
+
+    # 没东西直接返回空 list，省一次 KB 关联查询。
+    if total == 0 or offset >= total:
+        return []
+
+    result = await session.execute(base_q.offset(offset).limit(limit))
     bots = list(result.scalars().all())
     if not bots:
         return []

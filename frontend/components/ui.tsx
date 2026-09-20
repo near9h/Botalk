@@ -401,6 +401,15 @@ export interface SelectOption {
   icon?: ReactNode;
 }
 
+/**
+ * 「翻页式」Select：当候选很多（几百条），一次性塞进下拉既不必要也浪费
+ * 内存。`fetchPage({ q, offset, limit })` 接受后端返回 `{items, total}`；
+ * 输入框 + 滚动到底共同驱动 fetchPage。`labelOf(item)` 把后端字段
+ * 投影成 SelectOption 的形状。
+ *
+ * 调用方式与原 `Select` 完全兼容：不传 `fetchPage` 时退回到全量
+ * `options` + 客户端 filter，行为一致。
+ */
 export function Select({
   value,
   onChange,
@@ -408,6 +417,10 @@ export function Select({
   placeholder = "选择…",
   searchable = false,
   fullWidth = true,
+  pageSize = 20,
+  fetchPage,
+  labelOf,
+  searchPlaceholder = "搜索模型…",
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -415,10 +428,67 @@ export function Select({
   placeholder?: string;
   searchable?: boolean;
   fullWidth?: boolean;
+  /** 后端每页大小（paginated 模式）。 */
+  pageSize?: number;
+  /** 翻页模式：按 (q, offset, limit) 取一页候选 + 总数。 */
+  fetchPage?: (q: string, offset: number, limit: number) => Promise<{ items: unknown[]; total: number }>;
+  /** 把后端返回的原始 item 映射成 SelectOption；不传就用 item 本身当 option。 */
+  labelOf?: (item: unknown) => SelectOption;
+  searchPlaceholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
+
+  // ── paginated state ──
+  const [pagedItems, setPagedItems] = useState<unknown[]>([]);
+  const [pagedTotal, setPagedTotal] = useState(0);
+  const [pagedOffset, setPagedOffset] = useState(0);
+  const [pagedQ, setPagedQ] = useState("");
+  const [pagedLoading, setPagedLoading] = useState(false);
+
+  // 把后端 raw → option 的投影；返回 undefined 表示这一条不展示。
+  const project = useCallback(
+    (item: unknown): SelectOption | undefined => {
+      if (labelOf) return labelOf(item);
+      if (item == null || typeof item !== "object") return undefined;
+      const o = item as Record<string, unknown>;
+      const v = o.id ?? o.value;
+      const l = o.label ?? o.name;
+      if (v == null || l == null) return undefined;
+      return { value: String(v), label: String(l) };
+    },
+    [labelOf],
+  );
+
+  // 翻页 fetch —— debounce 关键字、请求第一页；初次打开也 fetch 一份。
+  useEffect(() => {
+    if (!fetchPage || !open) return;
+    let cancelled = false;
+    setPagedLoading(true);
+    fetchPage(pagedQ, 0, pageSize).then((res) => {
+      if (cancelled) return;
+      setPagedItems(res.items);
+      setPagedTotal(res.total);
+      setPagedOffset(res.items.length);
+      setPagedLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // 初次打开和换搜索词都重新 fetch；pagedOffset 不是触发条件。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchPage, open, pagedQ, pageSize]);
+
+  const loadMore = useCallback(async () => {
+    if (!fetchPage || pagedLoading) return;
+    if (pagedItems.length >= pagedTotal) return;
+    setPagedLoading(true);
+    const res = await fetchPage(pagedQ, pagedOffset, pageSize);
+    setPagedItems((prev) => [...prev, ...res.items]);
+    setPagedOffset((o) => o + res.items.length);
+    setPagedLoading(false);
+  }, [fetchPage, pagedQ, pagedOffset, pagedItems.length, pagedTotal, pagedLoading, pageSize]);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -429,14 +499,40 @@ export function Select({
   }, []);
 
   const selected = options.find((o) => o.value === value);
-  const filtered = useMemo(() => {
+
+  // 非 paginated：本地 filter；paginated：服务端已按 q 过滤，直接展示。
+  const filtered = useMemo<SelectOption[]>(() => {
+    if (fetchPage) {
+      const out: SelectOption[] = [];
+      for (const item of pagedItems) {
+        const o = project(item);
+        if (o) out.push(o);
+      }
+      return out;
+    }
     if (!query) return options;
     const q = query.toLowerCase();
     return options.filter((o) =>
       (o.label ?? "").toLowerCase().includes(q) ||
       (o.value ?? "").toLowerCase().includes(q),
     );
-  }, [options, query]);
+  }, [options, query, fetchPage, pagedItems, project]);
+
+  // 「下拉容器 scrollToBottom」探测 —— paginated 时滚动到底再拉下一页。
+  const listRef = useRef<HTMLDivElement>(null);
+  const onListScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    if (!fetchPage) return;
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 24) {
+      void loadMore();
+    }
+  }, [fetchPage, loadMore]);
+
+  // paginated 模式里，搜索词变化要清掉旧结果再拉（避免出现前后两批混在一起）。
+  const onQueryInput = (v: string) => {
+    setQuery(v);
+    if (fetchPage) setPagedQ(v);
+  };
 
   return (
     <div ref={ref} style={{ position: "relative", width: fullWidth ? "100%" : "auto" }}>
@@ -469,6 +565,8 @@ export function Select({
 
       {open && (
         <div
+          ref={listRef}
+          onScroll={onListScroll}
           className="glass-strong animate-scale-in"
           style={{
             position: "absolute",
@@ -485,7 +583,7 @@ export function Select({
             <input
               autoFocus
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => onQueryInput(e.target.value)}
               placeholder="搜索模型…"
               style={{
                 ...inputBaseStyle,
@@ -496,7 +594,7 @@ export function Select({
           )}
           {filtered.length === 0 ? (
             <div style={{ padding: 12, color: "var(--fg-subtle)", fontSize: 12, textAlign: "center" }}>
-              无匹配项
+              {pagedLoading ? "加载中…" : "无匹配项"}
             </div>
           ) : (
             filtered.map((o) => (
