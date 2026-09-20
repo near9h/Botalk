@@ -1,23 +1,27 @@
-"""Office → PDF 转换（LibreOffice headless + 磁盘缓存）。
+"""Office → PDF 转换（LibreOffice headless）。
 
 KB 里非 PDF 的源文件（Word / PPT / Excel）没法在浏览器里直接预览。
 MinerU 虽然内部会把 Office 转成版式化文档，但它只回解析产物
-（`full.md` / `layout.json`），**不提供那份 PDF**，所以预览得自己转一份。
+（`full.md` / `layout.json`），**不提供那份 PDF**，所以预览用的 PDF 得自己转。
 
-做法是懒转换 + 落盘缓存：`ensure_pdf(src)` 第一次调用时跑一次
-`soffice --headless --convert-to pdf`，把结果写到 `upload_dir` 下的
-`kb-preview-{attachment_id}.pdf`，之后直接复用。缓存 key 用附件 id +
-源文件 mtime，源文件被重新上传时会自动失效重转。
+两条入口：
 
-调用方拿到的是一个**落在 upload_dir 里的文件路径**。之所以不返回
-bytes：PDF 可能几十 MB，让 API 层用 `FileResponse` 从磁盘直接发出去，
-既省内存又能走 sendfile。
+  - `convert_to_pdf(src, out)`：核心转换，转一次写到指定路径。
+    上传接口用它做**入库前转换** —— Office 文件先转成 PDF 再落库，之后整条
+    链路（MinerU 解析、chunk 的 page/bbox、浏览器预览）只认 PDF。
+  - `ensure_pdf(src, token)`：懒转换 + 落盘缓存的兜底路径，给**存量**数据用
+    —— 之前已经以 .docx 存进 KB 的文档，点开预览时按需补一份，缓存名是
+    `kb-preview-{token}-{源文件 mtime}.pdf`（mtime 参与 key，源文件换了会重转）。
+
+调用方拿到的是一个**落在 upload_dir 里的文件路径**。之所以不返回 bytes：
+PDF 可能几十 MB，让 API 层用 `FileResponse` 从磁盘直接发出去，既省内存又能
+走 sendfile。
 
 注意：
   - LibreOffice 首次启动要建用户 profile，必须显式指定
     `-env:UserInstallation`，否则以 root 运行时会在 HOME 上失败。
-  - 转换是 CPU 密集且单次可能几秒到几十秒，所以放在线程里跑，
-    不要阻塞事件循环。
+  - 转换走 `asyncio.create_subprocess_exec`（子进程 + await），不阻塞事件
+    循环；单次可能几秒到几十秒，所以有超时上限。
 """
 from __future__ import annotations
 

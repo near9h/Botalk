@@ -1,198 +1,204 @@
-"""Unit tests for `app.services.citation_aligner`.
+"""`app.services.citation_aligner` 的单元测试。
 
-These tests avoid the live GLM embedding API by mocking
-`zhipuai_embed.embed_texts` to return deterministic vectors. We then
-verify that:
+当前实现是「子串匹配」而非早期的「向量相似度」：靠 chunk 文本的前若干字符
+在回答里找命中点，再把 `[doc: <key>]` 标记插到下一个句子边界。因此这里只测
+纯函数，不碰数据库、网络和 embedding，CI 里可以直接跑。
 
-  * `split_sentences` chunks CJK / English punctuation correctly
-  * `inject_markers` only appends to attributed sentences
-  * the threshold logic in `align` respects SIM_THRESHOLD
+注意：`pyproject.toml` 还没有 pytest 依赖，CI 也尚未接入 pytest，所以文件末尾
+留了一个 `__main__` 自跑入口，`python tests/test_citation_aligner.py` 即可执行
+全部用例（两种跑法都支持）。
 """
 from __future__ import annotations
 
-import math
 import sys
 from pathlib import Path
 
-import pytest
-
-# Make `app.*` importable when running pytest from anywhere.
+# 让 `app.*` 可导入，无论从哪个目录运行。
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.services import citation_aligner as ca  # noqa: E402
 from app.services.citation_aligner import (  # noqa: E402
     Alignment,
     ChunkLike,
+    FINGERPRINT_LEN,
+    _bracket_spans,
+    _find_outside_spans,
+    _fingerprint,
+    _normalize,
+    _span_end_around,
+    _to_chunk_like,
+    align,
     inject_markers,
-    split_sentences,
 )
 
 
-# ──────────────────────────── split_sentences ────────────────────────────
+def _chunk(key: str, text: str) -> ChunkLike:
+    return ChunkLike(text=text, snippet=text, citation_key=key)
 
 
-def test_split_sentences_chinese_punctuation():
-    text = "你好。我是测试！好的？"
-    assert split_sentences(text) == ["你好。", "我是测试！", "好的？"]
+# ──────────────────────────── _normalize / _fingerprint ────────────────────────────
 
 
-def test_split_sentences_ascii_punctuation():
-    assert split_sentences("Hi. There! OK?") == ["Hi.", "There!", "OK?"]
+def test_normalize_strips_punctuation_and_whitespace():
+    # 全角标点、换行、空格都不参与匹配，否则 LLM 的排版漂移会让引用解析失败。
+    assert _normalize("你好，\n 世界。") == "你好世界"
 
 
-def test_split_sentences_strips_markdown_bullets():
-    text = "- 提前 30日 说明\n- 优先留用三类人员"
-    parts = split_sentences(text)
-    # Each line becomes its own sentence; bullets stripped.
-    assert all(not p.startswith("-") for p in parts)
-    assert parts[0].startswith("提前")
+def test_normalize_folds_fullwidth_to_halfwidth():
+    # NFKC 把全角括号折成半角，所以两种写法归一化后相等。
+    assert _normalize("（三）") == _normalize("(三)")
 
 
-def test_split_sentences_keeps_short_fragments():
-    # We deliberately don't filter short fragments in split_sentences;
-    # rejection happens in `align` so indices line up with the source.
-    text = "好。提前 30日。"
-    assert split_sentences(text) == ["好。", "提前 30日。"]
+def test_fingerprint_caps_length_and_handles_empty():
+    assert _fingerprint("一二三四五", 3) == "一二三"
+    assert _fingerprint("", 3) == ""
+
+
+def test_fingerprint_default_len_is_30():
+    long_text = "甲" * 100
+    assert len(_fingerprint(long_text)) == FINGERPRINT_LEN
+
+
+# ──────────────────────────── 方括号区间（锚点安全区） ────────────────────────────
+
+
+def test_bracket_spans_finds_intervals():
+    # 区间含方括号本身，即 `[start, end)`。
+    assert _bracket_spans("a[b]c[d]") == [(1, 4), (5, 8)]
+
+
+def test_bracket_spans_ignores_unclosed_bracket():
+    assert _bracket_spans("a[b") == []
+
+
+def test_span_end_around_only_inside():
+    spans = [(1, 3)]
+    assert _span_end_around(spans, 2) == 3  # 内部
+    assert _span_end_around(spans, 1) is None  # 起点不算内部
+    assert _span_end_around(spans, 3) is None  # 终点（']'）不算内部
+
+
+def test_find_outside_spans_skips_bracket_interior():
+    # "x[.].y"：索引 2 的 '.' 落在 [.] 内必须跳过，返回括号外那个（索引 4）。
+    assert _find_outside_spans("x[.].y", ".", 0, [(1, 4)]) == 4
 
 
 # ──────────────────────────── inject_markers ────────────────────────────
 
 
-def _stub_chunk(key: str, snippet: str = "...") -> dict:
-    return {"citation_key": key, "snippet": snippet, "text": snippet}
+def test_inject_markers_inserts_at_sentence_boundary():
+    chunks = [_chunk("劳动合同法.pdf p.12 ¶3", "裁减人员时应当优先留用下列人员")]
+    answer = "裁减人员时应当优先留用下列人员。后续说明。"
+    got = inject_markers(answer, chunks, [])
+    assert got == "裁减人员时应当优先留用下列人员。 [doc: 劳动合同法.pdf p.12 ¶3]后续说明。"
 
 
-def test_inject_markers_appends_only_to_attributed():
-    answer = "提前 30日 说明情况。请补充人数。程序违法可主张 2N 赔偿金。"
-    aligned = [
-        Alignment(0, 0, 0.9),
-        Alignment(1, None, 0.1),  # rejected (below threshold)
-        Alignment(2, 0, 0.8),
+def test_inject_markers_no_fingerprint_match_is_noop():
+    chunks = [_chunk("劳动合同法.pdf p.12 ¶3", "完全无关的另一段内容")]
+    answer = "裁减人员时应当优先留用下列人员。"
+    assert inject_markers(answer, chunks, []) == answer
+
+
+def test_inject_markers_empty_inputs_are_noop():
+    answer = "任意回答。"
+    assert inject_markers(answer, [], []) == answer
+    assert inject_markers("", [_chunk("k", "任意内容")], []) == ""
+
+
+def test_inject_markers_skips_chunk_without_citation_key():
+    chunks = [ChunkLike(text="裁减人员时应当优先留用下列人员", snippet="同上", citation_key="")]
+    answer = "裁减人员时应当优先留用下列人员。"
+    assert inject_markers(answer, chunks, []) == answer
+
+
+def test_inject_markers_accepts_dict_and_object_chunks():
+    answer = "裁减人员时应当优先留用下列人员。"
+    as_dict = {"citation_key": "k.pdf p.1 ¶1", "snippet": "裁减人员时应当优先留用下列人员", "text": ""}
+    got_dict = inject_markers(answer, [as_dict], [])
+    got_obj = inject_markers(answer, [_chunk("k.pdf p.1 ¶1", "裁减人员时应当优先留用下列人员")], [])
+    assert "[doc: k.pdf p.1 ¶1]" in got_dict
+    assert got_dict == got_obj
+
+
+def test_inject_markers_stacks_chunks_hitting_same_anchor():
+    shared = "裁减人员时应当优先留用下列人员"
+    chunks = [_chunk("a.pdf p.1 ¶1", shared), _chunk("b.pdf p.2 ¶2", shared)]
+    got = inject_markers(shared + "。", chunks, [])
+    assert got.count("[doc:") == 2
+    assert "[doc: a.pdf p.1 ¶1]" in got and "[doc: b.pdf p.2 ¶2]" in got
+
+
+def test_inject_markers_keeps_existing_marker_intact():
+    """回归：注入点绝不能落进 LLM 已写的 `[doc: …]` 标记内部。
+
+    citation key 自带 `.` / `?`（`劳动合同法. pdf p. 12 ¶1`），而它们同时又是
+    句子终止符。若吸附时不排除方括号内部，注入的标记会插到已有标记中间，产出
+    `[doc: A [doc: B] A]` 这种畸形嵌套 —— 前端按第一个 `]` 截断，解析不出 key，
+    只能渲染成不可点击的 `?`。这里断言「原标记逐字保留」。
+    """
+    existing = "[doc: 劳动合同法. pdf p. 12 ¶1]"
+    answer = f"裁减人员时应当优先留用下列人员{existing} vs 其他情形"
+    chunks = [_chunk("劳动合同法.pdf p.12 ¶3", "裁减人员时应当优先留用下列人员")]
+    got = inject_markers(answer, chunks, [])
+    assert existing in got, f"已有标记被破坏了：{got}"
+    # 两个标记各自独立，不能出现嵌套。
+    assert got.count("[doc:") == 2
+
+
+def test_inject_markers_anchor_escapes_bracket_interior():
+    """起点本身就落在标记内部时，锚点必须先跳到标记之后。"""
+    existing = "[doc: 劳动合同法. pdf p. 12 ¶1]"
+    text = f"前缀{existing}。"
+    # 直接把 match_pos 落在方括号内部，验证 _next_anchor 会跳出去。
+    from app.services.citation_aligner import _next_anchor
+
+    inside = text.index("劳动合同法")
+    anchor = _next_anchor(text, inside)
+    assert anchor >= text.index("]") + 1
+
+
+# ──────────────────────────── align / _to_chunk_like ────────────────────────────
+
+
+def test_to_chunk_like_skips_none_and_coerces():
+    got = _to_chunk_like([None, {"citation_key": "k", "snippet": "s", "text": "t"}])
+    assert len(got) == 1
+    assert got[0].citation_key == "k"
+
+
+def test_align_returns_one_stub_per_chunk():
+    # 旧版按句返回相似度，现在保留形状但不参与决策：一句一个占位、chunk_idx 为 None。
+    chunks = [_chunk("a", "x"), _chunk("b", "y")]
+    got = align("任意回答。", chunks)
+    assert len(got) == 2
+    assert all(isinstance(a, Alignment) and a.chunk_idx is None for a in got)
+
+
+def test_align_empty_chunks_returns_empty():
+    assert align("任意回答。", []) == []
+
+
+# ──────────────────────────── 自跑入口（无 pytest 依赖） ────────────────────────────
+
+
+def _run_all() -> int:
+    tests = [
+        (name, obj)
+        for name, obj in sorted(globals().items())
+        if name.startswith("test_") and callable(obj)
     ]
-    chunks = [_stub_chunk("劳动合同法.pdf p.11 ¶8")]
-    got = inject_markers(answer, chunks, aligned)
-    assert "[doc: 劳动合同法.pdf p.11 ¶8]" in got
-    # Sentence 1 was rejected → no marker.
-    # Easiest assertion: count marker occurrences — exactly 2.
-    assert got.count("[doc: 劳动合同法.pdf p.11 ¶8]") == 2
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f"  PASS  {name}")
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            print(f"  FAIL  {name}: {type(exc).__name__}: {exc}")
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    return 1 if failed else 0
 
 
-def test_inject_markers_empty_chunks_no_op():
-    answer = "Some answer text."
-    aligned = [Alignment(0, 0, 0.9)]
-    assert inject_markers(answer, [], aligned) == answer
-
-
-def test_inject_markers_handles_dict_and_object_chunks():
-    # Mix dict and ChunkLike — aligner is supposed to coerce both.
-    answer = "提前 30日 说明。"
-    aligned = [Alignment(0, 1, 0.9)]
-    chunks = [
-        _stub_chunk("ignored"),
-        ChunkLike(text="...", snippet="...", citation_key="劳动合同法.pdf p.11 ¶8"),
-    ]
-    got = inject_markers(answer, chunks, aligned)
-    assert "[doc: 劳动合同法.pdf p.11 ¶8]" in got
-
-
-def test_inject_markers_out_of_range_chunk_idx():
-    answer = "提前 30日 说明。"
-    aligned = [Alignment(0, 99, 0.9)]  # idx 99 doesn't exist
-    chunks = [_stub_chunk("劳动合同法.pdf p.11 ¶8")]
-    # Should silently no-op for that sentence, not crash.
-    assert inject_markers(answer, chunks, aligned) == answer
-
-
-# ──────────────────────────── align (mocked embedding) ────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_align_threshold_filters_low_scores(monkeypatch):
-    """Sentence identical to chunk 0 → chunk_idx 0."""
-    # All texts → same vector → cosine = 1.0 with everything.
-    async def fake_embed(texts):
-        return [[1.0, 0.0] for _ in texts]
-
-    monkeypatch.setattr(
-        "app.services.zhipuai_embed.embed_texts", fake_embed
-    )
-    monkeypatch.setattr(
-        "app.services.zhipuai_embed.is_configured", lambda: True
-    )
-
-    chunks = [
-        ChunkLike(
-            text="这是关于 A 条款的文本",
-            snippet="这是关于 A 条款的文本",
-            citation_key="劳动合同法.pdf p.1 ¶1",
-        ),
-        ChunkLike(
-            text="完全无关的另一个话题",
-            snippet="完全无关的另一个话题",
-            citation_key="其他.pdf p.2 ¶3",
-        ),
-    ]
-    answer = "这是关于 A 条款的文本"
-    aligned = await ca.align(answer, chunks)
-    # One sentence; with identical embeddings it matches the first
-    # chunk (the loop picks index 0 on ties).
-    assert len(aligned) == 1
-    assert aligned[0].chunk_idx == 0
-    assert aligned[0].score >= ca.SIM_THRESHOLD
-
-
-@pytest.mark.asyncio
-async def test_align_rejects_short_sentences(monkeypatch):
-    async def fake_embed(texts):
-        return [[1.0, 0.0] for _ in texts]
-
-    monkeypatch.setattr(
-        "app.services.zhipuai_embed.embed_texts", fake_embed
-    )
-    monkeypatch.setattr(
-        "app.services.zhipuai_embed.is_configured", lambda: True
-    )
-
-    chunks = [
-        ChunkLike(text="anything", snippet="x", citation_key="k"),
-    ]
-    aligned = await ca.align("好的。", chunks)
-    assert aligned[0].chunk_idx is None
-
-
-@pytest.mark.asyncio
-async def test_align_no_chunks_returns_no_match():
-    aligned = await ca.align("任何句子都应该有引用。", [])
-    # No chunks at all → one Alignment with chunk_idx=None.
-    assert len(aligned) == 1
-    assert aligned[0].chunk_idx is None
-
-
-@pytest.mark.asyncio
-async def test_align_no_embedding_falls_back(monkeypatch):
-    """When `is_configured()` returns False, align returns all-None."""
-    monkeypatch.setattr(
-        "app.services.zhipuai_embed.is_configured", lambda: False
-    )
-    chunks = [
-        ChunkLike(text="any", snippet="x", citation_key="k"),
-    ]
-    aligned = await ca.align("任何句子都应该有引用。", chunks)
-    assert all(a.chunk_idx is None for a in aligned)
-
-
-# ──────────────────────────── cosine sanity ────────────────────────────
-
-
-def test_cosine_zero_vector():
-    assert ca._cosine([0, 0], [1, 1]) == 0.0
-
-
-def test_cosine_orthogonal():
-    assert math.isclose(ca._cosine([1, 0], [0, 1]), 0.0)
-
-
-def test_cosine_identical():
-    assert math.isclose(ca._cosine([0.6, 0.8], [0.6, 0.8]), 1.0)
+if __name__ == "__main__":
+    raise SystemExit(_run_all())

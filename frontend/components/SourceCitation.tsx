@@ -11,9 +11,9 @@
  *     PdfViewerWithBbox in a centered popup so the user gets the
  *     highlighted page without leaving the conversation.
  *
- * The chip is the only "always-visible" surface — clicking it dispatches
- * a fetch to GET /api/kb/{kb_id}/chunks/{chunk_id} for the chunk's
- * bbox payload, then opens the modal with the highlighted page.
+ * The chip is the only "always-visible" surface — clicking it opens the
+ * preview modal for that citation (bbox comes straight off the `CitedRef`
+ * carried through SSE, no extra fetch needed).
  *
  * IMPORTANT — why the prop is named `citedRef` and NOT `ref`:
  * `ref` is a reserved prop in React. `createElement` / the jsx runtime
@@ -119,14 +119,13 @@ export function CitationChip({ citedRef, onOpen }: CitationChipProps) {
 /**
  * Centered popup that hosts the PDF.js viewer for one citation.
  *
- * Lazy fetch: we only call GET /api/kb/{kb_id}/chunks/{chunk_id} when
- * the modal opens. The chunk row carries the bbox_json and the
- * attachment_id, but the *file bytes* are served by the existing
- * /api/attachments/{public_id}/download endpoint — except KB attachments
- * aren't chat attachments (group_id NULL), so we have to fetch the
- * public_id via the KB-doc endpoint first. If the fetch fails (e.g. no
- * local file), we still render the chip metadata so the user sees the
- * snippet + page number, just without a live PDF preview.
+ * The bytes come from the backend's unified
+ * `GET /api/kb/{kb_id}/documents/{doc_id}/preview`: a PDF source is served
+ * as-is, a Word / PPT / Excel source is converted to PDF server-side
+ * (LibreOffice, cached on disk). So no per-format branching is needed
+ * here — we only check whether the extension is one the backend can
+ * render, and otherwise show the chip metadata (snippet + page) without a
+ * live PDF.
  */
 export function CitationPreviewModal({
   citedRef,

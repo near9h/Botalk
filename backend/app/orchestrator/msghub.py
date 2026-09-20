@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -622,20 +623,21 @@ async def _generate_agent(
         msg = resp.choices[0].message
 
     # Posthoc substring-match citation injection. The LLM is *asked*
-    # to write `[doc: …]` markers in the prompt, but in practice it
-    # often paraphrases or forgets. The inject_markers pass below
+    # to write `[N]` / `[doc: …]` markers in the prompt, but in practice
+    # it often paraphrases or forgets. The inject_markers pass below
     # scans the LLM reply for verbatim chunks (and falls back to a
     # 15-char overlap match for paraphrased content), then inserts
     # `[doc: <key>]` markers at the next sentence boundary after each
-    # hit. It runs **only** when the LLM didn't already write enough
-    # markers itself — if the model does its job, we trust it.
+    # hit. It runs whenever the answer has KB refs to attribute.
     text = _message_text(msg)
     if cited_refs and text and not structured_doc_skill:
         try:
             from app.services.citation_aligner import inject_markers
             text = inject_markers(text, cited_refs, [])
         except Exception as exc:  # noqa: BLE001
-            print(f"[msghub] citation alignment failed: {exc}")
+            logging.getLogger(__name__).warning(
+                "citation alignment failed for bot %s: %s", bot.id, exc
+            )
     return text, cited_refs
 
 

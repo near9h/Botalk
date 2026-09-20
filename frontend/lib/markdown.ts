@@ -212,6 +212,43 @@ function buildCitationIndex(refs: CitedRef[] | undefined): Map<string, CitedRef>
   return idx;
 }
 
+/**
+ * 引用解析需要的全部查表，正文渲染与底部来源条共用同一份。
+ *
+ * 抽出来的原因：`renderMessageWithMentions` 把标记渲染成角标，
+ * `resolveCitedChunks` 让底部来源条列出「真正被引用的」，两者必须用完全
+ * 一样的解析规则和编号口径 —— 否则「底部括号与正文角标一致」这个不变量
+ * 会静默失效（正是这类不一致导致过 bug）。
+ *
+ *   - `byKey`         citation_key → chunk
+ *   - `byKeyNoSpace`  去掉空白后的 key → chunk，兜 LLM 回显时的空格漂移
+ *   - `byOrdinal`     短编号 `[N]` 的 N 就是 `cited_refs` 里的第 N 条
+ *                     （跳过 chunk_id 非数字的脏数据）
+ */
+type CitationLookup = {
+  byKey: Map<string, CitedRef>;
+  byKeyNoSpace: Map<string, CitedRef>;
+  byOrdinal: CitedRef[];
+};
+
+function buildCitationLookup(refs: CitedRef[] | undefined): CitationLookup {
+  const byKey = buildCitationIndex(refs);
+  const byKeyNoSpace = new Map<string, CitedRef>();
+  for (const [k, v] of byKey.entries()) {
+    byKeyNoSpace.set(k.replace(/\s+/g, ""), v);
+  }
+  const byOrdinal: CitedRef[] = [];
+  for (const r of refs ?? []) {
+    if (r && typeof r.chunk_id === "number") byOrdinal.push(r);
+  }
+  return { byKey, byKeyNoSpace, byOrdinal };
+}
+
+/** 解析长形式 `[doc: <key>]`：先精确匹配，再兜「去掉空白后」匹配。 */
+function lookupByKey(lookup: CitationLookup, key: string): CitedRef | undefined {
+  return lookup.byKey.get(key) ?? lookup.byKeyNoSpace.get(key.replace(/\s+/g, ""));
+}
+
 // 长形式 `[doc: <key>]` 与短编号 `[N]` 的合并扫描正则：一次遍历按
 // 出现顺序处理两种标记，得到的编号与渲染出来的角标数字一致。
 const CITATION_ANY_PATTERN = /\[doc:\s([^\]]+)\]|\[(\d{1,3})\]/g;
@@ -235,17 +272,7 @@ export function resolveCitedChunks(
   const out: Array<{ ref: CitedRef; ordinal: number }> = [];
   if (!text || !citedRefs || citedRefs.length === 0) return out;
 
-  const citationIndex = buildCitationIndex(citedRefs);
-  const citationIndexNoSpace = new Map<string, CitedRef>();
-  for (const [k, v] of citationIndex.entries()) {
-    citationIndexNoSpace.set(k.replace(/\s+/g, ""), v);
-  }
-  // 短编号 `[N]` 的 N 是 `cited_refs` 里的第 N 条（跳过 chunk_id 非数字
-  // 的脏数据）——与渲染器 `chunksByOrdinal` 的取法完全一致。
-  const chunksByOrdinal: CitedRef[] = [];
-  for (const r of citedRefs) {
-    if (r && typeof r.chunk_id === "number") chunksByOrdinal.push(r);
-  }
+  const lookup = buildCitationLookup(citedRefs);
 
   const seen = new Set<number>();
   const longOrdinalByChunk = new Map<number, number>();
@@ -258,9 +285,7 @@ export function resolveCitedChunks(
     let ordinal: number;
     if (m[1] !== undefined) {
       const key = m[1].trim();
-      ref =
-        citationIndex.get(key) ??
-        citationIndexNoSpace.get(key.replace(/\s+/g, ""));
+      ref = lookupByKey(lookup, key);
       if (!ref) continue;
       let n = longOrdinalByChunk.get(ref.chunk_id);
       if (n == null) {
@@ -272,8 +297,8 @@ export function resolveCitedChunks(
     } else {
       const n = Number(m[2]);
       // 越界的 `[N]` 渲染器会原样留成普通文本（不是引用），这里同样跳过。
-      if (!Number.isFinite(n) || n < 1 || n > chunksByOrdinal.length) continue;
-      ref = chunksByOrdinal[n - 1];
+      if (!Number.isFinite(n) || n < 1 || n > lookup.byOrdinal.length) continue;
+      ref = lookup.byOrdinal[n - 1];
       ordinal = n;
     }
     if (!ref || seen.has(ref.chunk_id)) continue;
@@ -303,24 +328,9 @@ export function renderMessageWithMentions(
     knownNames.set(b.name.toLowerCase(), b);
   }
 
-  // Citation lookup table — see CITATION_PATTERN above.
-  const citationIndex = buildCitationIndex(cited_refs);
-  // LLM-echoed citation keys sometimes drift from the prompt's exact
-  // formatting (extra spaces, full-width vs half-width `¶`, etc.). Build
-  // a whitespace-stripped secondary index so `[doc: foo.pdf p.3 ¶1]`
-  // still resolves when the LLM emits `[doc: foo.pdf  p.3 ¶ 1 ]`.
-  const citationIndexNoSpace = new Map<string, CitedRef>();
-  for (const [k, v] of citationIndex.entries()) {
-    citationIndexNoSpace.set(k.replace(/\s+/g, ""), v);
-  }
-  // Numbered ordinal → chunk. We assign in the order chunks appear in
-  // `cited_refs`, which matches the numbering the prompt template
-  // emits (`[1]`, `[2]`, …). If `cited_refs` is empty the map is also
-  // empty and `[N]` markers fall through to the orphan branch.
-  const chunksByOrdinal: CitedRef[] = [];
-  for (const r of cited_refs ?? []) {
-    if (r && typeof r.chunk_id === "number") chunksByOrdinal.push(r);
-  }
+  // 引用解析查表（key → chunk、序号 → chunk）。与 `resolveCitedChunks`
+  // 共用同一份构建逻辑，保证底部来源条和这里的角标口径一致。
+  const lookup = buildCitationLookup(cited_refs);
 
   // Strip a leading `[name] ` speaker prefix (added by the orchestrator
   // so other bots can tell voices apart in their prompt). Only at the
@@ -375,7 +385,7 @@ export function renderMessageWithMentions(
     // Primary: exact key match. Fallback: strip all whitespace so the
     // LLM's reformatting (extra spaces, line wraps in code blocks, etc.)
     // doesn't drop the citation to the non-clickable `?` orphan branch.
-    const ref = citationIndex.get(key) ?? citationIndexNoSpace.get(key.replace(/\s+/g, ""));
+    const ref = lookupByKey(lookup, key);
     const idx = placeholders.length;
     if (ref) {
       // Stable ordinal per unique chunk: same chunk_id in the same
@@ -402,27 +412,28 @@ export function renderMessageWithMentions(
   // substitute them back as raw HTML *after* parsing.
   let html = md.render(withCitations);
 
-  // Substitute `[doc: …]` placeholders back as raw HTML.
-  html = html.replace(/@@MENTION_(\d+)@@/g, (_match, n) => {
-    const idx = Number(n);
-    return placeholders[idx] ?? "";
-  });
-
-  // Second pass: handle the short `[N]` numbered form. The current
-  // prompt encourages the LLM to write `[1] [2] …` after each cited
-  // fact. These tokens survive markdown rendering as text (markdig's
-  // linkify would otherwise turn `[1]` into a reference link, but
-  // without a matching reference definition it stays as plain text —
-  // which is what we want). We do a fresh placeholder round so we can
-  // keep the markdig-unsafe `<sup>` injection off the markdown pipeline.
-  if (chunksByOrdinal.length > 0) {
+  // Short `[N]` numbered form goes FIRST, before the `@@MENTION_n@@`
+  // placeholders are inlined. The current prompt encourages the LLM to
+  // write `[1] [2] …` after each cited fact; those tokens survive markdown
+  // rendering as text (linkify leaves them alone without a matching
+  // reference definition, which is what we want).
+  //
+  // ORDER MATTERS: a `[doc: …]` chip rendered above has `[N]` as its
+  // *visible text*, so if this pass ran on HTML that already contained
+  // those chips it would match inside them and nest a second `<sup>` —
+  // and that inner chip resolves through `byOrdinal` while the outer one
+  // used `citeOrdinal`, so the two could point at different chunks while
+  // `closest(".citation")` in the click handler picks the inner one.
+  // Running first keeps the chips as opaque placeholder tokens, so the
+  // regex can only ever see the LLM's own markers.
+  if (lookup.byOrdinal.length > 0) {
     const shortPlaceholders: string[] = [];
     html = html.replace(CITATION_SHORT_PATTERN, (full, rawN) => {
       const n = Number(rawN);
-      if (!Number.isFinite(n) || n < 1 || n > chunksByOrdinal.length) {
+      if (!Number.isFinite(n) || n < 1 || n > lookup.byOrdinal.length) {
         return full; // leave non-citation `[12]` alone
       }
-      const ref = chunksByOrdinal[n - 1];
+      const ref = lookup.byOrdinal[n - 1];
       const idx = shortPlaceholders.length;
       shortPlaceholders.push(
         `<sup class="citation" data-citation-chunk-id="${ref.chunk_id}" data-citation-kb-id="${ref.kb_id}" data-citation-doc-id="${ref.kb_doc_id}" data-citation-key="${escapeAttr(ref.citation_key)}" title="${escapeAttr(ref.snippet || ref.citation_key)}">[${n}]</sup>`,
@@ -434,6 +445,13 @@ export function renderMessageWithMentions(
       return shortPlaceholders[idx] ?? "";
     });
   }
+
+  // Now that the short-form pass has run over the placeholder-only HTML,
+  // inline the mention chips and the `[doc: …]` citation chips.
+  html = html.replace(/@@MENTION_(\d+)@@/g, (_match, n) => {
+    const idx = Number(n);
+    return placeholders[idx] ?? "";
+  });
 
   return html;
 }

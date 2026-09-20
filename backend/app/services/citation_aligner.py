@@ -194,27 +194,80 @@ def _find_overlap(haystack_norm: str, needle_norm: str) -> int:
     return -1
 
 
+def _bracket_spans(s: str) -> list[tuple[int, int]]:
+    """返回 `s` 里所有 `[...]` 区间的 `[start, end)`（含方括号）。"""
+    spans: list[tuple[int, int]] = []
+    start: int | None = None
+    for i, ch in enumerate(s):
+        if ch == "[" and start is None:
+            start = i
+        elif ch == "]" and start is not None:
+            spans.append((start, i + 1))
+            start = None
+    return spans
+
+
+def _span_end_around(spans: list[tuple[int, int]], pos: int) -> int | None:
+    """`pos` 落在某个区间**内部**时返回该区间结束位置，否则 `None`。"""
+    for start, end in spans:
+        if start < pos < end:
+            return end
+    return None
+
+
+def _find_outside_spans(
+    answer: str, needle: str, from_pos: int, spans: list[tuple[int, int]]
+) -> int:
+    """从 `from_pos` 找 `needle`，跳过落在 `[...]` 内部的命中。
+
+    命中落在已有引用标记里时，跳到该标记之后继续找 —— 否则锚点会插进
+    `[doc: …]` 中间。
+    """
+    pos = from_pos
+    while pos <= len(answer):
+        idx = answer.find(needle, pos)
+        if idx < 0:
+            return -1
+        skip_to = _span_end_around(spans, idx)
+        if skip_to is None:
+            return idx
+        pos = skip_to
+    return -1
+
+
 def _next_anchor(answer: str, match_pos: int) -> int:
     """Pick the byte offset of the *next* sentence/paragraph boundary
     after `match_pos` inside `answer`. We snap to whichever comes
-    first: end of the current paragraph (`\n\n`), end of the current
-    line (`\n`), or end of the current CJK sentence (。！？).
+    first: end of the current paragraph (`\\n\\n`), end of the current
+    line (`\\n`), or end of the current CJK sentence (。！？).
 
     Snapping to a boundary (instead of right at the match position)
     makes the inserted `[doc: …]` marker sit naturally at the end of
     a thought, like a human author would place it.
+
+    约束：吸附点必须落在所有 `[...]` 之外。citation key 里本身带 `.` / `?`
+    （`劳动合同法. pdf p. 12 ¶1`），而它们同时又是句子终止符 —— 不排除的话，
+    注入的 `[doc: …]` 会落进 LLM 已写的标记内部，生成
+    `[doc: A [doc: B] A]` 这种畸形嵌套：前端 `CITATION_PATTERN` 按第一个 `]`
+    截断，解析不出 key，只能渲染成不可点击的 `?`。
     """
+    spans = _bracket_spans(answer)
+    # 起点本身就在某个标记内部时，先跳到标记之后。
+    escaped = _span_end_around(spans, match_pos)
+    if escaped is not None:
+        match_pos = escaped
+
     # First try paragraph break (most common structure in chat output).
-    nl2 = answer.find("\n\n", match_pos)
+    nl2 = _find_outside_spans(answer, "\n\n", match_pos, spans)
     if nl2 >= 0:
         return nl2
     # Then line break.
-    nl = answer.find("\n", match_pos)
+    nl = _find_outside_spans(answer, "\n", match_pos, spans)
     if nl >= 0:
         return nl
     # Then CJK sentence terminator.
     for term in ("。", "！", "?", "!", ".", "？"):
-        idx = answer.find(term, match_pos)
+        idx = _find_outside_spans(answer, term, match_pos, spans)
         if idx >= 0:
             return idx + 1  # include the terminator
     # Fallback: insert at the match position itself.
@@ -270,7 +323,7 @@ def inject_markers(
     # Build a list of (insert_position, marker_string) we want to splice
     # in. Sorted by position so earlier markers don't shift later
     # match offsets.
-    inserts: list[tuple[int, list[str]]] = []
+    inserts: list[tuple[int, str]] = []
     for idx, c in enumerate(chunk_list):
         if not c.citation_key:
             continue
