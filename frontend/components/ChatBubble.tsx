@@ -301,7 +301,11 @@ export function ChatBubble({
           <AttachmentCards attachments={attachments} accent={isSummary} />
         )}
         {!bubble.streaming && bubble.citedRefs && bubble.citedRefs.length > 0 && (
-          <CitedRefsFooter refs={bubble.citedRefs} onOpen={openCitation} />
+          <CitedRefsFooter
+            refs={bubble.citedRefs}
+            content={bubble.content}
+            onOpen={openCitation}
+          />
         )}
         {/* Bot bubble footer: timestamp only (no retry — re-sending the
             user prompt is what "重试" means, and that's already wired

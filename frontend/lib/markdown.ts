@@ -212,6 +212,78 @@ function buildCitationIndex(refs: CitedRef[] | undefined): Map<string, CitedRef>
   return idx;
 }
 
+// 长形式 `[doc: <key>]` 与短编号 `[N]` 的合并扫描正则：一次遍历按
+// 出现顺序处理两种标记，得到的编号与渲染出来的角标数字一致。
+const CITATION_ANY_PATTERN = /\[doc:\s([^\]]+)\]|\[(\d{1,3})\]/g;
+
+/**
+ * 返回一条消息正文里**真正被引用**的 chunk（按角标编号升序）。
+ *
+ * `cited_refs` 的语义是「本次检索命中并注入提示词的候选 chunk」，不等
+ * 于「回答引用到的来源」——提示词把它们编号列给 LLM，LLM 只给自己用到
+ * 的那些标 `[N]`。所以底部来源条不能直接全量渲染 `cited_refs`，否则会
+ * 出现「正文 4 个角标、底下 5 条来源」。
+ *
+ * `ordinal` 直接取角标上的数字：短编号形式就是 LLM 写的 n（因为 n 就是
+ * `cited_refs` 里的序号，与提示词给出的编号一致），`[doc: …]` 形式沿用
+ * 渲染器的递增序号。这样底部括号里的数字与正文角标严格一致。
+ */
+export function resolveCitedChunks(
+  text: string,
+  citedRefs: CitedRef[] | undefined,
+): Array<{ ref: CitedRef; ordinal: number }> {
+  const out: Array<{ ref: CitedRef; ordinal: number }> = [];
+  if (!text || !citedRefs || citedRefs.length === 0) return out;
+
+  const citationIndex = buildCitationIndex(citedRefs);
+  const citationIndexNoSpace = new Map<string, CitedRef>();
+  for (const [k, v] of citationIndex.entries()) {
+    citationIndexNoSpace.set(k.replace(/\s+/g, ""), v);
+  }
+  // 短编号 `[N]` 的 N 是 `cited_refs` 里的第 N 条（跳过 chunk_id 非数字
+  // 的脏数据）——与渲染器 `chunksByOrdinal` 的取法完全一致。
+  const chunksByOrdinal: CitedRef[] = [];
+  for (const r of citedRefs) {
+    if (r && typeof r.chunk_id === "number") chunksByOrdinal.push(r);
+  }
+
+  const seen = new Set<number>();
+  const longOrdinalByChunk = new Map<number, number>();
+  let longOrdinal = 0;
+
+  CITATION_ANY_PATTERN.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = CITATION_ANY_PATTERN.exec(text)) !== null) {
+    let ref: CitedRef | undefined;
+    let ordinal: number;
+    if (m[1] !== undefined) {
+      const key = m[1].trim();
+      ref =
+        citationIndex.get(key) ??
+        citationIndexNoSpace.get(key.replace(/\s+/g, ""));
+      if (!ref) continue;
+      let n = longOrdinalByChunk.get(ref.chunk_id);
+      if (n == null) {
+        longOrdinal += 1;
+        n = longOrdinal;
+        longOrdinalByChunk.set(ref.chunk_id, n);
+      }
+      ordinal = n;
+    } else {
+      const n = Number(m[2]);
+      // 越界的 `[N]` 渲染器会原样留成普通文本（不是引用），这里同样跳过。
+      if (!Number.isFinite(n) || n < 1 || n > chunksByOrdinal.length) continue;
+      ref = chunksByOrdinal[n - 1];
+      ordinal = n;
+    }
+    if (!ref || seen.has(ref.chunk_id)) continue;
+    seen.add(ref.chunk_id);
+    out.push({ ref, ordinal });
+  }
+  out.sort((a, b) => a.ordinal - b.ordinal);
+  return out;
+}
+
 export function renderMessageWithMentions(
   text: string,
   knownBots: Bot[],

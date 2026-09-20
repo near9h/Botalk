@@ -1,38 +1,36 @@
 "use client";
 
 /**
- * Stage 4: footer chip strip showing every cited source for a bot reply.
+ * 气泡底部的来源清单。
  *
- * The chips inside the bot's markdown answer are inline (handled by the
- * `citation` class in markdown.ts). This footer is the *summary list* —
- * one chip per unique chunk — so users can scan the source set without
- * hunting through the prose. Clicking either inline or footer chip
- * dispatches the same onOpen callback; the drawer state lives on the
- * parent (ChatBubble).
+ * 只列**正文真正引用到**的 chunk —— `cited_refs` 是「本次检索命中并注入
+ * 提示词的候选 chunk」，LLM 只给自己用到的那些标 `[N]`，直接全量渲染会
+ * 出现「正文 4 个角标、底下 5 条来源」。解析交给 `resolveCitedChunks`，
+ * 编号直接取角标数字，与正文严格一致；一条都没引用就不渲染这条 footer。
+ *
+ * 正文里内联的角标由 markdown.ts 的 `citation` class 渲染，点击角标和点
+ * 击这里的条目都走同一个 onOpen 回调。
  */
+import { useMemo } from "react";
 import type { CitedRef } from "@/lib/api";
+import { resolveCitedChunks } from "@/lib/markdown";
 
 export function CitedRefsFooter({
   refs,
+  content,
   onOpen,
 }: {
+  /** 该条消息的 `cited_refs`（检索候选集，用于把角标解析回 chunk）。 */
   refs: CitedRef[];
+  /** 该条消息的正文原文，用来解析正文里的 `[N]` / `[doc: …]` 标记。 */
+  content: string;
   onOpen: (ref: CitedRef) => void;
 }) {
-  if (!refs || refs.length === 0) return null;
-  // Dedupe by chunk_id so the same source cited twice in the prose
-  // doesn't render two identical chips. Skip nullish entries that
-  // would otherwise throw `Cannot read properties of undefined` at
-  // render time — the parent stream occasionally emits a null entry
-  // when a chunk lookup happens before the assistant JSON is parsed.
-  const seen = new Set<number>();
-  const uniq: CitedRef[] = [];
-  for (const r of refs) {
-    if (!r || typeof r.chunk_id !== "number") continue;
-    if (seen.has(r.chunk_id)) continue;
-    seen.add(r.chunk_id);
-    uniq.push(r);
-  }
+  const cited = useMemo(
+    () => resolveCitedChunks(content, refs),
+    [content, refs],
+  );
+  if (cited.length === 0) return null;
   return (
     <div
       style={{
@@ -47,15 +45,15 @@ export function CitedRefsFooter({
       }}
     >
       <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 10px" }}>
-        {uniq.map((r, i) => (
+        {cited.map(({ ref, ordinal }) => (
           <span
-            key={r.chunk_id}
+            key={ref.chunk_id}
             style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
           >
             <button
               type="button"
-              onClick={() => onOpen(r)}
-              title={r.snippet || r.filename}
+              onClick={() => onOpen(ref)}
+              title={ref.snippet || ref.filename}
               style={{
                 border: "none",
                 background: "transparent",
@@ -66,7 +64,7 @@ export function CitedRefsFooter({
                 padding: 0,
               }}
             >
-              [{i + 1}]
+              [{ordinal}]
             </button>
             <span
               style={{
@@ -75,9 +73,9 @@ export function CitedRefsFooter({
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
               }}
-              title={r.citation_key || r.filename}
+              title={ref.citation_key || ref.filename}
             >
-              {(r.citation_key || r.filename || "未知来源").replace(/\.pdf$/i, "")}
+              {(ref.citation_key || ref.filename || "未知来源").replace(/\.pdf$/i, "")}
             </span>
           </span>
         ))}
