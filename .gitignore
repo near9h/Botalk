@@ -9,6 +9,7 @@ node_modules/
 data/
 *.log
 .DS_Store
+*.tsbuildinfo
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

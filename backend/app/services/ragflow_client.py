@@ -54,13 +54,16 @@ def _base() -> str:
 
 
 def is_configured() -> bool:
-    """True iff RAGFlow is enabled AND has a base URL.
+    """Backwards-compat stub: always False.
 
-    The chat orchestrator uses this to skip the retrieval step entirely
-    when RAG isn't deployed (dev environment without enough RAM for the
-    RAGFlow stack).
+    The RAGFlow retrieval path was replaced by `local_retriever` (pgvector
+    + 智谱 GLM). The old module is kept so existing imports / audit rows
+    / log strings don't break, but the config fields it used to read
+    (`ragflow_base_url`, `ragflow_api_key`) have been removed. Anything
+    that gates behaviour on `is_configured()` should now consult
+    `local_retriever.is_configured()` instead.
     """
-    return bool(settings.rag_enabled and settings.ragflow_base_url)
+    return False
 
 
 def _headers() -> dict[str, str]:

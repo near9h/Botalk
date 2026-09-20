@@ -37,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db.models import Attachment, KbChunk, KbDocument, KnowledgeBase
 from app.db.session import SessionLocal
-from app.services import ragflow_client
+from app.services import local_retriever, ragflow_client
 from app.services.mineru import MinedChunk, parse_pdf_with_chunks
 
 logger = logging.getLogger(__name__)
@@ -129,23 +129,42 @@ async def _run(kb_doc_id: int) -> None:
                 MinedChunk(block_id=0, page=1, text=md[:8000], bbox=[])
             ] if md else []
 
-        # 3. Make sure the KB has a RAGFlow dataset id. First ingest
-        # pays the create_dataset call; subsequent ones reuse it.
-        if not ragflow_client.is_configured():
-            # No RAGFlow available — degrade gracefully: keep the
-            # chunks in `kb_chunks` so the UI can show "we have 32
-            # chunks but retrieval is offline". The chat orchestrator
-            # already short-circuits when RAG isn't configured.
+        # 3. Local-vector path: persist chunks first (so we know the row
+        #    ids), then embed them with GLM. If GLM isn't configured we
+        #    still keep the chunks (UI shows them as a static preview);
+        #    retrieval will return empty because `local_retriever.is_configured()`
+        #    is False.
+        await _store_chunks(kb_doc_id, chunks)
+        if not local_retriever.is_configured():
             logger.info(
-                "RAGFlow not configured; storing chunks locally only for doc %s",
+                "GLM embedding not configured; chunks persisted without vectors for doc %s",
                 kb_doc_id,
             )
         else:
-            await _ensure_ragflow_dataset(session=None, kb_id=kb.id, kb_name=kb.name)
-            await _upload_to_ragflow(kb.id, att, file_bytes, md)
+            async with SessionLocal() as embed_session:
+                n = await local_retriever.embed_chunks_for_doc(
+                    embed_session, kb_doc_id, chunks,
+                )
+                logger.info(
+                    "embedded %s chunks for doc %s (model=%s)",
+                    n, kb_doc_id, settings.zhipuai_embedding_model,
+                )
 
-        # 4. Persist chunks locally for the chat UI's bbox highlights.
-        await _store_chunks(kb_doc_id, chunks)
+        # 4. Best-effort RAGFlow sync kept for backwards compatibility
+        #    with existing rows that already have a ragflow_dataset_id.
+        #    New KBs skip this path because `is_configured()` returns
+        #    False — the orchestrator now reads `kb_chunks.embedding`
+        #    instead of hitting RAGFlow.
+        if (
+            ragflow_client.is_configured()
+            and kb.ragflow_dataset_id
+        ):
+            try:
+                await _upload_to_ragflow(kb.id, att, file_bytes, md)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "RAGFlow upload skipped for doc %s: %s", kb_doc_id, exc,
+                )
 
         # 5. Update the doc's bookkeeping.
         async with SessionLocal() as session:
@@ -257,6 +276,11 @@ async def _store_chunks(kb_doc_id: int, chunks: list[MinedChunk]) -> None:
     We drop existing rows first because the file might be re-uploaded
     (idempotent re-ingest). The FK cascade from `kb_documents` already
     handles hard deletes, so we only need a plain DELETE here.
+
+    The chunk's full `text` body is persisted alongside the 200-char
+    `snippet`. With the local-vector retrieval path the full body is
+    needed to feed the LLM context after a hit, and embedding-side
+    we want the whole text (capped at 4000 chars by the model card).
     """
     async with SessionLocal() as session:
         existing = await session.execute(
@@ -265,14 +289,16 @@ async def _store_chunks(kb_doc_id: int, chunks: list[MinedChunk]) -> None:
         for row in existing.scalars().all():
             await session.delete(row)
         for c in chunks:
+            text = (c.text or "").strip()[:4000]
             session.add(
                 KbChunk(
                     kb_doc_id=kb_doc_id,
-                    ragflow_chunk_id=None,  # filled in lazily by retrieval
+                    ragflow_chunk_id=None,  # local path doesn't use this
                     page=c.page,
                     para=c.block_id,
                     bbox_json=c.bbox or None,
-                    snippet=c.text[:200],
+                    text=text,
+                    snippet=text[:200],
                 )
             )
         await session.commit()

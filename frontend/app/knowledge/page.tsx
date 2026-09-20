@@ -96,7 +96,7 @@ export default function KnowledgePage() {
       return;
     }
     try {
-      await api.deleteKb(kb.id);
+      await api.deleteKb(kb.public_id);
       toast.push({
         title: "已删除",
         description: `知识库「${kb.name}」已移除`,
@@ -196,7 +196,7 @@ export default function KnowledgePage() {
                 }}
               >
                 <Link
-                  href={`/knowledge/${k.id}`}
+                  href={`/knowledge/${k.public_id}`}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -244,9 +244,9 @@ export default function KnowledgePage() {
                   }}
                 >
                   <span>
-                    {k.ragflow_dataset_id
-                      ? "RAGFlow 已初始化"
-                      : "尚未初始化（等待首次上传）"}
+                    {(k.ready_doc_count ?? 0) > 0
+                      ? "本地检索就绪"
+                      : "本地检索尚未就绪（等待首次上传）"}
                   </span>
                   <button
                     type="button"

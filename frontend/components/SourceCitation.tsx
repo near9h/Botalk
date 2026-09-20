@@ -24,7 +24,13 @@ import { api } from "@/lib/api";
 import { PdfViewerWithBbox, type PdfHighlight } from "./PdfViewerWithBbox";
 
 export type CitationChipProps = {
-  ref: CitedRef;
+  // Accept `CitedRef | undefined` so callers iterating `refs` don't
+  // have to filter out null entries — we render a disabled stub chip
+  // for those instead of throwing at render time. The marshalling
+  // path (orchestrator → SSE → frontend) occasionally emits a
+  // null entry when a chunk lookup happens before the assistant JSON
+  // is fully parsed; rendering must remain robust.
+  ref: CitedRef | null | undefined;
   onOpen: (ref: CitedRef) => void;
 };
 
@@ -35,6 +41,33 @@ export type CitationChipProps = {
  */
 export function CitationChip({ ref, onOpen }: CitationChipProps) {
   const label = shortLabel(ref);
+  const title = ref?.snippet || ref?.citation_key || label;
+  // Nullish ref → render a non-interactive "未知来源" pill. We don't
+  // want to throw `Cannot read properties of undefined` here because
+  // the chat page is already scrolled past the bubble.
+  if (!ref) {
+    return (
+      <span
+        aria-disabled="true"
+        title={label}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          padding: "2px 8px",
+          margin: "0 2px",
+          fontSize: 11.5,
+          borderRadius: 999,
+          background: "rgba(148, 163, 184, 0.18)",
+          color: "var(--fg-muted)",
+          border: "1px solid rgba(148, 163, 184, 0.45)",
+          whiteSpace: "nowrap",
+        }}
+      >
+        📎 {label}
+      </span>
+    );
+  }
   return (
     <button
       type="button"
@@ -42,7 +75,7 @@ export function CitationChip({ ref, onOpen }: CitationChipProps) {
         e.stopPropagation();
         onOpen(ref);
       }}
-      title={ref.snippet || ref.citation_key}
+      title={title}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -134,17 +167,15 @@ export function CitationDrawer({
         // endpoint which carries the public_id via /api/kb/{id}/docs.
         const doc = await api.getKbDocument(ref.kb_id, ref.kb_doc_id);
         if (cancelled) return;
-        // Reuse the same path the regular chat uses — Stage 2 routes
-        // KB attachments through /api/attachments/{public_id}/download.
-        // We don't have public_id in the KbDocument type today (it's
-        // an Attachment row), but the listing endpoint returns the
-        // filename + mime which is enough to surface "this is a PDF".
-        // For Stage 4 we attempt the conventional attachment URL via
-        // the `attachment_id` (the integer PK); the backend exposes
-        // /api/attachments/{id}/download too, used internally.
-        const url = `/api/attachments/${doc.attachment_id}/download`;
-        if (doc.mime_type?.includes("pdf") || /\.pdf$/i.test(doc.filename)) {
-          setPdfSrc(url);
+        // Reuse the same path the regular chat uses — KB attachments
+        // are served through /api/attachments/{public_id}/download.
+        // We *must* use the wire-facing public_id (unguessable token),
+        // not the integer pk — the download endpoint refuses the int
+        // id since the public_id migration.
+        if (!doc.public_id) {
+          setError(`该文档缺少 public_id，无法在线预览`);
+        } else if (doc.mime_type?.includes("pdf") || /\.pdf$/i.test(doc.filename)) {
+          setPdfSrc(`/api/attachments/${doc.public_id}/download`);
         } else {
           setError(
             `暂不支持在线预览 ${doc.filename || "此文件"}（仅 PDF 可在浏览器内打开）`,
@@ -288,11 +319,21 @@ export function CitationDrawer({
   );
 }
 
-/** Compact chip label: drop the .pdf extension, keep `p.X ¶Y`. */
-function shortLabel(ref: CitedRef): string {
+/** Compact chip label: drop the .pdf extension, keep `p.X ¶Y`.
+ *
+ * Defensive against malformed payloads: when `cited_refs` arrives with
+ * a nullish entry (e.g. a streaming `message_end` whose chunk lookup
+ * happened before the assistant JSON was fully parsed), we'd
+ * otherwise throw `Cannot read properties of undefined (reading
+ * 'citation_key')` at render time. Fall through to the filename or
+ * a generic placeholder so the bubble still renders.
+ */
+function shortLabel(ref: CitedRef | undefined | null): string {
+  if (!ref) return "未知来源";
   // citation_key looks like `<filename> p.X ¶Y`. We strip the extension
   // off the filename so the chip stays compact.
-  const key = ref.citation_key || ref.filename;
+  const key = ref.citation_key || ref.filename || "未知来源";
+  if (!key) return "未知来源";
   const m = key.match(/^(.+?)\s+p\.(\d+)\s+¶(\d+)/);
   if (m) {
     const name = (m[1] || "").replace(/\.[a-z0-9]+$/i, "");

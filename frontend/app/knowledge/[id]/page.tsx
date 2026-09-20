@@ -23,8 +23,6 @@ import { Button, useToast } from "@/components/ui";
 import { PageShell } from "@/components/Sidebar";
 import { KbUploader } from "@/components/KbUploader";
 import { ChunkPreview } from "@/components/ChunkPreview";
-import { CitationDrawerProvider } from "@/components/CitationDrawerContext";
-import { CitationDrawerSurface } from "@/components/SourceCitation";
 import { api, KbChunk, KbDocument, KnowledgeBase } from "@/lib/api";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -46,7 +44,7 @@ export default function KnowledgeDetailPage({
 }: {
   params: { id: string };
 }) {
-  const kbId = Number(params.id);
+  const kbId = params.id;
   const toast = useToast();
   const [kb, setKb] = useState<KnowledgeBase | null>(null);
   const [docs, setDocs] = useState<KbDocument[]>([]);
@@ -56,7 +54,7 @@ export default function KnowledgeDetailPage({
   const [chunksLoading, setChunksLoading] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (!Number.isFinite(kbId)) return;
+    if (!kbId) return;
     try {
       const [kbRow, docList] = await Promise.all([
         api.getKb(kbId),
@@ -177,7 +175,7 @@ export default function KnowledgeDetailPage({
     }
   };
 
-  if (!Number.isFinite(kbId)) {
+  if (!kbId) {
     return (
       <PageShell>
         <div style={{ padding: 40 }}>无效的知识库 id</div>
@@ -208,7 +206,6 @@ export default function KnowledgeDetailPage({
   }
 
   return (
-    <CitationDrawerProvider>
     <PageShell>
       <div style={{ padding: "32px 40px", margin: "0 auto", width: "100%" }}>
         <div style={{ marginBottom: 20 }}>
@@ -268,9 +265,9 @@ export default function KnowledgeDetailPage({
                 </span>
               )}
               <span>
-                {kb.ragflow_dataset_id
-                  ? "RAGFlow dataset 已初始化"
-                  : "尚未初始化（首次上传时创建）"}
+                {docs.some((d) => d.status === "ready")
+                  ? "本地检索就绪"
+                  : "本地检索尚未就绪（等待首次上传）"}
               </span>
             </div>
           </div>
@@ -464,7 +461,6 @@ export default function KnowledgeDetailPage({
                 kbId={kbId}
                 kbDocId={activeDocId}
                 filename={activeDoc?.filename ?? ""}
-                onClose={() => setActiveDocId(null)}
               />
             )}
           </div>
@@ -476,8 +472,6 @@ export default function KnowledgeDetailPage({
       </div>
       {/* Stage 4 fix: shared PDF viewer across the page so any chunk
           preview opens the same drawer. */}
-      <CitationDrawerSurface />
     </PageShell>
-    </CitationDrawerProvider>
   );
 }

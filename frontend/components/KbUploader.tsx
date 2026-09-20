@@ -21,7 +21,7 @@ export function KbUploader({
   kbId,
   onUploaded,
 }: {
-  kbId: number;
+  kbId: string;
   onUploaded?: (doc: KbDocument) => void;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);

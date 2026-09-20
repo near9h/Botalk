@@ -1,6 +1,10 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector is a drop-in `postgres:16-alpine` plus the
+    # pgvector extension baked in. We use it for KB chunk embeddings
+    # (the local-vector retrieval path). Switching the image here is
+    # safe — the data dir from plain `postgres:16` is binary-compatible.
+    image: pgvector/pgvector:pg16
     container_name: botgroup-postgres
     restart: unless-stopped
     environment:
@@ -50,8 +54,11 @@ services:
       RAGFLOW_BASE_URL: ${RAGFLOW_BASE_URL:-}
       RAGFLOW_API_KEY: ${RAGFLOW_API_KEY:-}
       ZHIPUAI_API_KEY: ${ZHIPUAI_API_KEY:-}
+      ZHIPUAI_BASE_URL: ${ZHIPUAI_BASE_URL:-https://open.bigmodel.cn/api/paas}
       ZHIPUAI_EMBEDDING_MODEL: ${ZHIPUAI_EMBEDDING_MODEL:-embedding-3}
+      ZHIPUAI_EMBEDDING_DIM: ${ZHIPUAI_EMBEDDING_DIM:-2048}
       ZHIPUAI_RERANK_MODEL: ${ZHIPUAI_RERANK_MODEL:-rerank}
+      ZHIPUAI_RERANK_ENABLED: ${ZHIPUAI_RERANK_ENABLED:-true}
     expose:
       - "8000"   # Only reachable via the nginx reverse proxy.
     # RAGFlow side-car uses `host.docker.internal` so this container
@@ -62,6 +69,10 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data/uploads:/data/uploads
+      # Pydantic reads `.env` from CWD. The backend's CWD is `/app`, so
+      # bind-mounting the project `.env` here lets ZHIPUAI_* / RAGFLOW_*
+      # overrides actually take effect without rebuilding the image.
+      - ./.env:/app/.env:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=3).status==200 else 1)"]
       interval: 10s

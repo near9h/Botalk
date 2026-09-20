@@ -73,30 +73,36 @@ class Settings(BaseSettings):
     audit_retention_days: int = 90
 
     # ─────────────────────── RAG / 知识库 ───────────────────────
-    # RAGFlow HTTP API. Empty disables RAG entirely (BotGroup falls back to
-    # the no-knowledge-base path). Set RAGFLOW_BASE_URL=http://ragflow:9380
-    # inside docker-compose, or to the host:port when running outside.
-    ragflow_base_url: str = ""
-    ragflow_api_key: str = ""
+    # We dropped the RAGFlow-backed retrieval path (the engine needs
+    # ≥4C8G and a Linux host with vm.max_map_count≥262144 — too heavy
+    # for small dev / edge installs). The local-vector path uses
+    # Postgres + pgvector for storage and the 智谱 GLM PaaS for both
+    # embedding and optional rerank.
+    rag_enabled: bool = True
     # Number of chunks to retrieve per bot turn before rerank.
     ragflow_top_k: int = 12
     # Number of chunks kept after rerank → injected into the prompt.
     ragflow_top_n_after_rerank: int = 5
-    # Score threshold (0-1). Chunks below this are dropped before rerank.
+    # Cosine-similarity threshold (0-1). Hits below this are dropped
+    # before rerank. Higher = fewer but more relevant chunks.
     ragflow_score_threshold: float = 0.30
-    # Switches off RAG even if RAGFLOW_BASE_URL is set — handy for staged
-    # rollouts where one bot family still needs the legacy path.
-    rag_enabled: bool = True
 
     # 智谱 GLM embedding + rerank. Same endpoint base as their PaaS API.
     zhipuai_api_key: str = ""
     zhipuai_base_url: str = "https://open.bigmodel.cn/api/paas"
     # embedding-3 (latest) or embedding-2 (legacy). Defaults to embedding-3.
     zhipuai_embedding_model: str = "embedding-3"
+    # Vector dimensionality baked into the kb_chunks.embedding column.
+    # GLM `embedding-3` returns 2048-dim vectors. pgvector's ANN indexes
+    # (HNSW / IVFFlat) cap at 2000-dim — we run without an index for now
+    # and rely on the small chunk count (a few hundred). When the
+    # dataset grows past ~10k chunks we'll either downgrade the model
+    # or pre-truncate to 1536 dims before storage.
+    zhipuai_embedding_dim: int = 2048
     # Rerank endpoint — "rerank" set to the model id on RAG/Paas.
     zhipuai_rerank_model: str = "rerank"
-    # When True, skip rerank and rank by RAGFlow similarity only. Useful
-    # during dev when GLM rerank quota is exhausted.
+    # When False, skip rerank and rank by vector similarity only.
+    # Useful during dev when GLM rerank quota is exhausted.
     zhipuai_rerank_enabled: bool = True
 
     @property

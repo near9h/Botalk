@@ -1,6 +1,7 @@
 """SQLAlchemy ORM models."""
 import secrets
 from datetime import datetime
+from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -364,6 +365,13 @@ class KnowledgeBase(Base):
     # owner/admin still retains write/mutate rights. Mirrors bots.is_public.
     is_public: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     ragflow_dataset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Wire-facing unguessable identifier — used in URLs (`/knowledge/{public_id}`)
+    # and on the API surface. The integer `id` stays as the internal FK target
+    # for `kb_documents.kb_id` and `bot_kb.kb_id`. New rows get a fresh
+    # `secrets.token_urlsafe(16)` token from `api/kb.create_kb`.
+    public_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, default="",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )
@@ -372,10 +380,11 @@ class KnowledgeBase(Base):
 class KbDocument(Base):
     """One ingested source file inside a knowledge base.
 
-    Tracks the RAGFlow ingest lifecycle (`status`: pending → parsing →
-    ready / failed) and stores the engine-side `ragflow_doc_id` we get
-    back from the upload call. The actual text / vectors live inside
-    RAGFlow; this row is only metadata.
+    Tracks the ingest lifecycle (`status`: pending → parsing → ready /
+    failed) and stores the `embedding_model` that was used to vectorize
+    its chunks. With the local-vector path (pgvector), the actual text
+    + vectors live in `kb_chunks` and we use this row to surface
+    aggregate stats (`chunk_count`) and to detect model migrations.
     """
 
     __tablename__ = "kb_documents"
@@ -395,18 +404,23 @@ class KbDocument(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     error: Mapped[str] = mapped_column(Text, nullable=False, default="")
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # GLM embedding model id baked into the chunk vectors on ingest.
+    # NULL means "legacy — pre-local-vector migration"; the worker
+    # treats those rows as needing re-indexing.
+    embedding_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )
 
 
 class KbChunk(Base):
-    """Cached chunk metadata returned from RAGFlow after retrieval.
+    """One retrieval unit for a KB document.
 
-    We deliberately do NOT store vectors or full text bodies — RAGFlow
-    owns those. We only mirror the metadata the chat UI needs to render
-    a "📎 来源：xxx 第3页" chip and jump the PDF.js viewer to the
-    right bbox rectangle.
+    With the local-vector retrieval path, every chunk is self-contained:
+    `text` carries the full body (truncated to 4000 chars) and
+    `embedding` carries the GLM dense vector. `ragflow_chunk_id` is
+    kept around for backwards compatibility with the previous
+    RAGFlow-based schema and may be NULL going forward.
     """
 
     __tablename__ = "kb_chunks"
@@ -423,8 +437,18 @@ class KbChunk(Base):
     para: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # [x1, y1, x2, y2] in PDF user-space coords. NULL for non-PDF.
     bbox_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    # First ~200 chars of the chunk for the KB list page preview.
+    # Full chunk body (capped at 4000 chars by the ingest worker). The
+    # `snippet` column below keeps the first ~200 chars for the KB list
+    # preview and remains a JSON-safe string the API can serialize.
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     snippet: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # pgvector column — declared as raw `Text` so SQLAlchemy doesn't
+    # need the pgvector package. The migration's `ALTER COLUMN ... TYPE
+    # vector(N)` rewrites this to the actual vector type at upgrade
+    # time. We never read/write it through SQLAlchemy directly; the
+    # retriever uses raw SQL with parameterized vectors.
+    embedding: Mapped[Any | None] = mapped_column(Text, nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

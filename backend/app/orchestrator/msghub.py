@@ -40,6 +40,16 @@ settings = get_settings()
 _STRUCT_RETRY_MAX = 3
 
 
+def _now_iso() -> str:
+    """UTC ISO timestamp with no microseconds — what we send over SSE.
+
+    Stable on the wire so the chat UI can group events into a single
+    bubble even when one round produces several `message_end` payloads.
+    """
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
 # Match bot-authored file attachments. Two flavors:
 #   [FILE:foo.md] ... [/FILE]   (canonical, end-tagged)
 #   [FILE:foo.md] ... (single-line, no end tag — model occasionally drops it)
@@ -104,6 +114,11 @@ class OrchestratorEvent:
     # Empty list when the bot has no KB mounted or retrieval returned
     # nothing — never None so the SSE consumer can iterate freely.
     cited_refs: list[dict[str, Any]] | None = None
+    # ISO timestamp of when this event was produced. The chat UI
+    # stamps every bubble on `message_end` and stamps the user prompt
+    # on `run_start` so the user can see when each reply landed and
+    # so the "重试" button knows which user prompt to re-send.
+    created_at: str | None = None
 
 
 # ─────────────────────── speaker-selection policies ───────────────────────
@@ -650,7 +665,7 @@ async def run_group_discussion(
             f"{user_prompt}\n\n---\n【附件内容(MinerU 解析)】\n{truncated}"
         )
     history: list[dict[str, str]] = [{"role": "user", "content": effective_prompt}]
-    yield OrchestratorEvent(type="run_start", content=user_prompt, role="user")
+    yield OrchestratorEvent(type="run_start", content=user_prompt, role="user", created_at=_now_iso())
 
     early_stop_markers = (
         "final answer:",
@@ -819,6 +834,7 @@ async def run_group_discussion(
                 # Stage 3: forward KB citation metadata. Empty list when
                 # the bot has no KB mounted or retrieval returned nothing.
                 cited_refs=cited_refs,
+                created_at=_now_iso(),
             )
 
         if history and any(
@@ -890,6 +906,7 @@ async def run_group_discussion(
                 # shape is uniform across bot turns and the summary
                 # (no undefined-vs-empty ambiguity).
                 cited_refs=[],
+                created_at=_now_iso(),
             )
         except asyncio.CancelledError:
             raise

@@ -24,6 +24,11 @@ type Props = {
   onSaved: () => Promise<void> | void;
 };
 
+// Right-pane list pagination. 5 keeps the dialog to a single screen on
+// 1080p while still letting the user see enough cards to make a pick.
+// Tuned against skill / KB card heights (~110–140px) plus 8px gap.
+const PAGE_SIZE = 5;
+
 /**
  * Create / edit a bot. While editing, lets the user pick which skills
  * to enable on this bot. Selected skills are saved via PUT
@@ -44,12 +49,27 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<number[]>([]);
   // Stage 5: KB tab. `kbs` is the full list the user can mount; the
-  // `selectedKbIds` mirrors `initial.kb_ids` (or starts empty for a
-  // new bot). The "skills" / "knowledge" tabs are mutually exclusive —
-  // a bot can mount skills OR KBs without one polluting the other.
+  // `selectedKbPublicIds` mirrors `initial.kb_public_ids` (or starts
+  // empty for a new bot). The "skills" / "knowledge" tabs are
+  // mutually exclusive — a bot can mount skills OR KBs without one
+  // polluting the other. We track wire-facing public_ids (strings)
+  // because that's what the API expects on the PATCH payload.
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
-  const [selectedKbIds, setSelectedKbIds] = useState<number[]>([]);
+  const [selectedKbPublicIds, setSelectedKbPublicIds] = useState<string[]>([]);
   const [rightTab, setRightTab] = useState<"skills" | "knowledge">("skills");
+  // Local-only fuzzy filter for the right-pane lists. Skills/KBs are
+  // fetched in full on dialog open (see the load effect below), so we
+  // never need to round-trip to the server just to filter — keeping
+  // typing instant. Each tab keeps its own query so switching back
+  // doesn't lose what you typed.
+  const [skillQuery, setSkillQuery] = useState("");
+  const [kbQuery, setKbQuery] = useState("");
+  // Pagination state per tab. The list itself is small (skills/KBs are
+  // typically < 20 entries) but each card is tall — paginating keeps the
+  // dialog a single screen and lets us surface a real "N / M selected"
+  // without forcing the user to scroll past a long list. 5 / page.
+  const [skillPage, setSkillPage] = useState(1);
+  const [kbPage, setKbPage] = useState(1);
   const [isPublic, setIsPublic] = useState(false);
   const [me, setMe] = useState<{ id: number; role: "admin" | "user" } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -75,9 +95,11 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
       setParamsText(JSON.stringify(initial.params || {}, null, 2));
       setIsPublic(Boolean(initial.is_public));
       // Stage 5: hydrate the KB selection from the server-rendered
-      // `kb_ids` array (see api.bots patch response). Fall back to
-      // empty when the field isn't present (older payloads).
-      setSelectedKbIds(Array.isArray(initial.kb_ids) ? initial.kb_ids : []);
+      // `kb_public_ids` array (see api.bots patch response). Fall
+      // back to empty when the field isn't present (older payloads).
+      setSelectedKbPublicIds(
+        Array.isArray(initial.kb_public_ids) ? initial.kb_public_ids : [],
+      );
     } else {
       setName("");
       setEmoji("🤖");
@@ -86,7 +108,11 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
       setTemperature(0.7);
       setParamsText("{}");
       setSelectedSkillIds([]);
-      setSelectedKbIds([]);
+      setSelectedKbPublicIds([]);
+      setSkillQuery("");
+      setKbQuery("");
+      setSkillPage(1);
+      setKbPage(1);
       setIsPublic(false);
     }
   }, [open, initial]);
@@ -128,6 +154,59 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
     };
   }, [open, initial, toast]);
 
+  // Filter helpers — case-insensitive substring match across name +
+  // description (KB list also tags in description). Substring is
+  // enough at this size; if the lists ever grow past a few hundred
+  // we'd swap to a proper fuzzy matcher.
+  const filteredSkills = useMemo(() => {
+    const q = skillQuery.trim().toLowerCase();
+    if (!q) return skills;
+    return skills.filter((s) => {
+      const hay = `${s.name} ${s.description || ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [skills, skillQuery]);
+
+  const filteredKbs = useMemo(() => {
+    const q = kbQuery.trim().toLowerCase();
+    if (!q) return kbs;
+    return kbs.filter((k) => {
+      const hay = `${k.name} ${k.description || ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [kbs, kbQuery]);
+
+  // Paged slices + total page counts. Resetting the page to 1 inside the
+  // effect below means typing in the search box automatically jumps back
+  // to the first page; switching tabs resets via the form-hydrate effect.
+  const skillPageCount = Math.max(1, Math.ceil(filteredSkills.length / PAGE_SIZE));
+  const kbPageCount = Math.max(1, Math.ceil(filteredKbs.length / PAGE_SIZE));
+  const pagedSkills = useMemo(
+    () =>
+      filteredSkills.slice(
+        (skillPage - 1) * PAGE_SIZE,
+        skillPage * PAGE_SIZE,
+      ),
+    [filteredSkills, skillPage],
+  );
+  const pagedKbs = useMemo(
+    () =>
+      filteredKbs.slice(
+        (kbPage - 1) * PAGE_SIZE,
+        kbPage * PAGE_SIZE,
+      ),
+    [filteredKbs, kbPage],
+  );
+
+  // Keep `skillPage` in [1, skillPageCount] even when filter shrinks the
+  // list below the current page; same for KBs.
+  useEffect(() => {
+    if (skillPage > skillPageCount) setSkillPage(1);
+  }, [skillPage, skillPageCount]);
+  useEffect(() => {
+    if (kbPage > kbPageCount) setKbPage(1);
+  }, [kbPage, kbPageCount]);
+
   const modelOptions = useMemo<SelectOption[]>(
     () =>
       models.map((m) => ({
@@ -144,6 +223,17 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
     setSelectedSkillIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     );
+  };
+
+  // Wrap the raw search setters so typing jumps to page 1. Without this
+  // a search that matches only page 2+ would silently show nothing.
+  const onSkillQueryChange = (v: string) => {
+    setSkillQuery(v);
+    setSkillPage(1);
+  };
+  const onKbQueryChange = (v: string) => {
+    setKbQuery(v);
+    setKbPage(1);
   };
 
   // 用当前「名称」调 NewAPI 生成一段默认人设，已填的内容会被覆盖
@@ -213,11 +303,14 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
         // Save the enabled skill set in one shot. backend returns the
         // final list so we can re-render the parent without a refetch.
         await api.setBotSkills(botId, selectedSkillIds);
-        // Stage 5: persist KB mounts. Backend treats `kb_ids` as a
-        // full overwrite (absent = no change; [] = unmount all;
+        // Stage 5: persist KB mounts. Backend treats `kb_public_ids`
+        // as a full overwrite (absent = no change; [] = unmount all;
         // list = idempotent bind). Sending the same list twice is a
         // no-op so we don't bother diffing locally.
-        await api.updateBot(botId, { kb_ids: selectedKbIds } as Partial<Bot>);
+        await api.updateBot(
+          botId,
+          { kb_public_ids: selectedKbPublicIds } as Partial<Bot>,
+        );
       }
       toast.push({
         title: initial ? "已保存" : "已创建",
@@ -442,8 +535,27 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
               <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>
                 {rightTab === "skills"
                   ? `${selectedSkillIds.length} / ${skills.length} 已选`
-                  : `${selectedKbIds.length} / ${kbs.length} 已挂载`}
+                  : `${selectedKbPublicIds.length} / ${kbs.length} 已挂载`}
               </span>
+            </div>
+            {/* Search bar — sits outside the scroll container so it
+                stays pinned at the top regardless of how long the list
+                gets (and so it can claim full container width instead
+                of fighting inner padding). */}
+            <div style={{ marginTop: 8 }}>
+              {rightTab === "skills" ? (
+                <SearchBar
+                  value={skillQuery}
+                  onChange={onSkillQueryChange}
+                  placeholder={t("botEdit.searchSkills")}
+                />
+              ) : (
+                <SearchBar
+                  value={kbQuery}
+                  onChange={onKbQueryChange}
+                  placeholder={t("botEdit.searchKbs")}
+                />
+              )}
             </div>
             <div
               style={{
@@ -457,6 +569,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                 borderRadius: "var(--radius)",
                 overflowY: "auto",
                 background: "var(--surface-2)",
+                marginTop: 8,
               }}
             >
               {rightTab === "skills" ? (
@@ -471,8 +584,19 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                   >
                     暂无技能，请先到「技能中心」启用。
                   </div>
+                ) : filteredSkills.length === 0 ? (
+                  <div
+                    style={{
+                      color: "var(--fg-subtle)",
+                      fontSize: 12,
+                      textAlign: "center",
+                      padding: 24,
+                    }}
+                  >
+                    没有匹配「{skillQuery}」的技能
+                  </div>
                 ) : (
-                  skills.map((s) => {
+                  pagedSkills.map((s) => {
                     const active = selectedSkillIds.includes(s.id);
                     const assetCount = ((s.manifest?.assets as SkillAsset[]) || []).length;
                     return (
@@ -524,8 +648,7 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                     );
                   })
                 )
-              ) : // knowledge tab
-              kbs.length === 0 ? (
+              ) : kbs.length === 0 ? (
                 <div
                   style={{
                     color: "var(--fg-subtle)",
@@ -536,12 +659,23 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                 >
                   暂无可挂载的知识库，请先到「知识库」页创建。
                 </div>
+              ) : filteredKbs.length === 0 ? (
+                <div
+                  style={{
+                    color: "var(--fg-subtle)",
+                    fontSize: 12,
+                    textAlign: "center",
+                    padding: 24,
+                  }}
+                >
+                  没有匹配「{kbQuery}」的知识库
+                </div>
               ) : (
-                kbs.map((k) => {
-                  const active = selectedKbIds.includes(k.id);
+                pagedKbs.map((k) => {
+                  const active = selectedKbPublicIds.includes(k.public_id);
                   return (
                     <label
-                      key={k.id}
+                      key={k.public_id}
                       style={{
                         display: "flex",
                         gap: 10,
@@ -561,10 +695,10 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                         type="checkbox"
                         checked={active}
                         onChange={() =>
-                          setSelectedKbIds((prev) =>
-                            prev.includes(k.id)
-                              ? prev.filter((x) => x !== k.id)
-                              : [...prev, k.id],
+                          setSelectedKbPublicIds((prev) =>
+                            prev.includes(k.public_id)
+                              ? prev.filter((x) => x !== k.public_id)
+                              : [...prev, k.public_id],
                           )
                         }
                         style={{ marginTop: 2 }}
@@ -604,9 +738,9 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                           }}
                         >
                           {k.description || "（无描述）"}
-                          {!k.ragflow_dataset_id && (
+                          {!(k.ready_doc_count ?? 0) && (
                             <span style={{ marginLeft: 6, color: "var(--danger)" }}>
-                              · 尚未初始化（等待首次上传）
+                              · 本地检索尚未就绪
                             </span>
                           )}
                         </div>
@@ -614,6 +748,24 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
                     </label>
                   );
                 })
+              )}
+            </div>
+            {/* Pager sits below the scroll container so the list itself
+                keeps its fixed-height chrome (header + search + pager =
+                constant, only the card list scrolls when needed). */}
+            <div style={{ marginTop: 8, display: "flex", justifyContent: "center" }}>
+              {rightTab === "skills" ? (
+                <Pager
+                  page={skillPage}
+                  pageCount={skillPageCount}
+                  onChange={setSkillPage}
+                />
+              ) : (
+                <Pager
+                  page={kbPage}
+                  pageCount={kbPageCount}
+                  onChange={setKbPage}
+                />
               )}
             </div>
           </div>
@@ -660,5 +812,135 @@ function TabButton({
     >
       {children}
     </button>
+  );
+}
+
+/**
+ * Right-pane list filter. Local-only — never round-trips to the
+ * server. Sits inside the scroll container so it stays visible at the
+ * top while the user scrolls through long skill/KB lists.
+ */
+function SearchBar({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <div style={{ position: "relative", flexShrink: 0, width: "100%" }}>
+      <span
+        aria-hidden
+        style={{
+          position: "absolute",
+          left: 10,
+          top: "50%",
+          transform: "translateY(-50%)",
+          fontSize: 13,
+          color: "var(--fg-subtle)",
+          pointerEvents: "none",
+          zIndex: 1,
+        }}
+      >
+        🔍
+      </span>
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        style={{
+          height: 32,
+          paddingLeft: 30,
+          paddingRight: value ? 28 : 12,
+          fontSize: 12,
+        }}
+      />
+      {value && (
+        <button
+          type="button"
+          aria-label="清空搜索"
+          onClick={() => onChange("")}
+          style={{
+            position: "absolute",
+            right: 6,
+            top: "50%",
+            transform: "translateY(-50%)",
+            width: 20,
+            height: 20,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            border: "none",
+            borderRadius: 999,
+            background: "var(--surface-2)",
+            color: "var(--fg-muted)",
+            cursor: "pointer",
+            fontSize: 11,
+            lineHeight: 1,
+            padding: 0,
+            zIndex: 1,
+          }}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Compact pager for the right-pane lists. Hides itself when there's
+ * only one page so a 3-skill deployment doesn't get a useless control.
+ * Uses prev/next + page numbers; no jumping to arbitrary pages since
+ * the lists are tiny.
+ */
+function Pager({
+  page,
+  pageCount,
+  onChange,
+}: {
+  page: number;
+  pageCount: number;
+  onChange: (p: number) => void;
+}) {
+  if (pageCount <= 1) return null;
+  const go = (p: number) => {
+    if (p < 1 || p > pageCount) return;
+    onChange(p);
+  };
+  const btn = (label: string | number, target: number, opts: { disabled?: boolean; active?: boolean } = {}) => (
+    <button
+      key={`${label}-${target}`}
+      type="button"
+      disabled={opts.disabled}
+      onClick={() => go(target)}
+      style={{
+        minWidth: 28,
+        height: 24,
+        padding: "0 8px",
+        fontSize: 12,
+        fontWeight: 500,
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        background: opts.active ? "var(--accent)" : "var(--surface-solid)",
+        color: opts.active ? "white" : opts.disabled ? "var(--fg-subtle)" : "var(--fg-muted)",
+        cursor: opts.disabled ? "default" : "pointer",
+        opacity: opts.disabled ? 0.5 : 1,
+        transition: "all var(--transition)",
+      }}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+      {btn("‹", page - 1, { disabled: page <= 1 })}
+      {Array.from({ length: pageCount }, (_, i) => i + 1).map((p) =>
+        btn(p, p, { active: p === page }),
+      )}
+      {btn("›", page + 1, { disabled: page >= pageCount })}
+    </div>
   );
 }

@@ -34,7 +34,10 @@ class BotUpdate(BaseModel):
     is_public: bool | None = None
     # 知识库挂载：传一个完整 list 覆盖（idempotent：缺失的 unbind，多出的 bind）。
     # 留 None 表示不动；传 [] 表示解绑所有。
-    kb_ids: list[int] | None = None
+    #
+    # 列表里是 wire-facing `public_id` token 而不是整数 PK，与
+    # `KnowledgeBase.public_id` 一致。
+    kb_public_ids: list[str] | None = None
     # is_system / is_protected / scope / owner_id 不可通过 PATCH 改；只能由 admin
     # 通过独立的"提升/降级"接口或 SQL 改。
     # is_system is intentionally NOT updatable here — system identity is
@@ -51,7 +54,8 @@ class BotOut(BotBase):
     scope: str = "user"
     is_public: bool = False
     # 知识库挂载 id 列表（前端编辑表单直接绑定）
-    kb_ids: list[int] = []
+    kb_ids: list[int] = []  # integer FKs — internal use only
+    kb_public_ids: list[str] = []  # wire-facing tokens for the frontend
     created_at: datetime
 
 

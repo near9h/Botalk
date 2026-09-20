@@ -27,6 +27,7 @@ empty KbDocument, then schedule the ingest worker. The client polls
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 from typing import Annotated
 
@@ -39,7 +40,7 @@ from fastapi import (
     UploadFile,
 )
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_user
@@ -64,18 +65,26 @@ class KbCreate(BaseModel):
 
 
 class KbOut(BaseModel):
+    # `id` is kept around for the KB list sort + debugging; callers
+    # routing by URL or API path should use `public_id` exclusively.
     id: int
+    public_id: str
     name: str
     description: str
     is_public: bool
     ragflow_dataset_id: str | None
+    # Number of docs that finished ingest (status="ready"). Used by the
+    # KB list page to surface "本地检索就绪" without an extra round-trip.
+    ready_doc_count: int = 0
     created_at: str
 
     @classmethod
-    def from_row(cls, kb: KnowledgeBase) -> "KbOut":
+    def from_row(cls, kb: KnowledgeBase, *, ready_doc_count: int = 0) -> "KbOut":
         return cls(
             id=kb.id,
+            public_id=kb.public_id,
             name=kb.name,
+            ready_doc_count=ready_doc_count,
             description=kb.description or "",
             is_public=kb.is_public,
             ragflow_dataset_id=kb.ragflow_dataset_id,
@@ -87,6 +96,7 @@ class KbDocumentOut(BaseModel):
     id: int
     kb_id: int
     attachment_id: int
+    public_id: str | None = None  # wire-facing id used by /api/attachments/{public_id}/download
     filename: str
     mime_type: str
     size_bytes: int
@@ -102,6 +112,7 @@ class KbDocumentOut(BaseModel):
             id=d.id,
             kb_id=d.kb_id,
             attachment_id=d.attachment_id,
+            public_id=att.public_id,
             filename=att.filename,
             mime_type=att.mime_type or "",
             size_bytes=att.size_bytes,
@@ -139,9 +150,19 @@ class KbChunkOut(BaseModel):
 
 
 async def _resolve_kb(
-    session: AsyncSession, kb_id: int, user: User
+    session: AsyncSession, kb_public_id: str, user: User
 ) -> KnowledgeBase:
-    kb = await session.get(KnowledgeBase, kb_id)
+    """Look up a KB by its wire-facing `public_id`.
+
+    Mirrors the same shift we did for groups and attachments: the URL
+    path takes the unguessable token, not the integer pk. We still
+    return 404 on missing/unauthorized to avoid leaking the existence
+    of private KBs to non-owners.
+    """
+    result = await session.execute(
+        select(KnowledgeBase).where(KnowledgeBase.public_id == kb_public_id)
+    )
+    kb = result.scalar_one_or_none()
     if not kb:
         raise HTTPException(status_code=404, detail="knowledge base not found")
     # Visibility:
@@ -183,14 +204,28 @@ async def list_kbs(
     """All KBs the caller can mount on a bot. Sorted by name."""
     stmt = select(KnowledgeBase).order_by(KnowledgeBase.name.asc())
     rows = (await session.execute(stmt)).scalars().all()
-    out: list[KbOut] = []
-    for kb in rows:
-        if user.role == "admin" or kb.scope == "system" or kb.is_public:
-            out.append(KbOut.from_row(kb))
-            continue
-        if kb.owner_id == user.id:
-            out.append(KbOut.from_row(kb))
-    return out
+    visible = [
+        kb for kb in rows
+        if user.role == "admin" or kb.scope == "system"
+        or kb.is_public or kb.owner_id == user.id
+    ]
+    if not visible:
+        return []
+    # Aggregate ready-doc counts in one round-trip so the UI can show
+    # "本地检索就绪" vs "尚未就绪" without paging docs for each row.
+    ids = [kb.id for kb in visible]
+    ready_counts: dict[int, int] = {}
+    counts_q = await session.execute(
+        select(KbDocument.kb_id, func.count(KbDocument.id))
+        .where(KbDocument.kb_id.in_(ids), KbDocument.status == "ready")
+        .group_by(KbDocument.kb_id)
+    )
+    for kb_id, n in counts_q.all():
+        ready_counts[kb_id] = int(n)
+    return [
+        KbOut.from_row(kb, ready_doc_count=ready_counts.get(kb.id, 0))
+        for kb in visible
+    ]
 
 
 @router.post("", response_model=KbOut, status_code=201)
@@ -208,6 +243,7 @@ async def create_kb(
         owner_id=user.id,
         scope="user",
         is_public=payload.is_public,
+        public_id=secrets.token_urlsafe(16),
     )
     session.add(kb)
     # Flush so the kb.id is generated before we record the audit row;
@@ -230,7 +266,7 @@ async def create_kb(
 
 @router.get("/{kb_id}", response_model=KbOut)
 async def get_kb(
-    kb_id: int,
+    kb_id: str,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
 ) -> KbOut:
@@ -240,7 +276,7 @@ async def get_kb(
 
 @router.delete("/{kb_id}", status_code=204)
 async def delete_kb(
-    kb_id: int,
+    kb_id: str,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
     ctx: audit_service.AuditContext = Depends(audit_service.audit_ctx),
@@ -267,7 +303,7 @@ async def delete_kb(
         session, ctx,
         action="kb.delete",
         target_type="kb",
-        target_id=str(kb_id),
+        target_id=str(kb.id),
         target_name=name,
     )
     await session.commit()
@@ -278,7 +314,7 @@ async def delete_kb(
 
 @router.get("/{kb_id}/documents", response_model=list[KbDocumentOut])
 async def list_kb_documents(
-    kb_id: int,
+    kb_id: str,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
 ) -> list[KbDocumentOut]:
@@ -300,7 +336,7 @@ async def list_kb_documents(
     status_code=201,
 )
 async def upload_kb_document(
-    kb_id: int,
+    kb_id: str,
     file: Annotated[UploadFile, File(...)],
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
@@ -394,7 +430,7 @@ async def upload_kb_document(
     response_model=KbDocumentOut,
 )
 async def get_kb_document(
-    kb_id: int,
+    kb_id: str,
     doc_id: int,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
@@ -418,7 +454,7 @@ async def get_kb_document(
     status_code=204,
 )
 async def delete_kb_document(
-    kb_id: int,
+    kb_id: str,
     doc_id: int,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
@@ -468,7 +504,7 @@ async def delete_kb_document(
     response_model=list[KbChunkOut],
 )
 async def list_kb_document_chunks(
-    kb_id: int,
+    kb_id: str,
     doc_id: int,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),
@@ -506,7 +542,7 @@ async def list_kb_document_chunks(
     response_model=KbChunkOut,
 )
 async def get_kb_chunk(
-    kb_id: int,
+    kb_id: str,
     chunk_id: int,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(require_user),

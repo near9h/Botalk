@@ -247,23 +247,35 @@ def _layout_to_chunks(
 ) -> list[MinedChunk]:
     """Walk MinerU's layout tree and yield text-bearing blocks with bbox.
 
-    MinerU's layout.json is a list of pages, each page a list of blocks.
-    Each block has `bbox` ([x1, y1, x2, y2] in PDF user-space) plus
-    a nested `lines` array carrying per-line text. We collapse lines
-    into a single text body for the chunk. Pure-whitespace or single-
-    character blocks are dropped to keep the chunk list tight.
+    MinerU's `layout.json` carries the recognized reading order under
+    `pdf_info[*].para_blocks` (3.4.x) or `preproc_blocks` (older), with
+    nested `lines[*].spans[*].content` for the actual text. We collapse
+    the spans into a single text body per block and keep the bbox in PDF
+    user-space coordinates so pdf.js can render the highlight without
+    any extra scaling. Pure-whitespace / single-character blocks are
+    dropped to keep the chunk list tight.
+
+    Older MinerU (pre-3.x) used `pages[*].blocks` with `lines` only —
+    we still accept that shape for backwards compatibility.
     """
     chunks: list[MinedChunk] = []
     pages = layout.get("pdf_info") or layout.get("pages") or []
     if isinstance(pages, dict):
         pages = [pages]
     for page_idx, page in enumerate(pages, start=1):
-        blocks = page.get("blocks") or page.get("layout_blocks") or []
+        # MinerU 3.4.x: paragraph reading order. 3.x-pre: preproc_blocks.
+        # Pre-3.x: legacy `blocks` / `layout_blocks` flat list.
+        blocks = (
+            page.get("para_blocks")
+            or page.get("preproc_blocks")
+            or page.get("blocks")
+            or page.get("layout_blocks")
+            or []
+        )
         for block_idx, block in enumerate(blocks):
             bbox = block.get("bbox") or []
             if not bbox or len(bbox) != 4:
                 continue
-            # Try a few field shapes MinerU has used across versions.
             lines = (
                 block.get("lines")
                 or block.get("segments")
@@ -272,7 +284,7 @@ def _layout_to_chunks(
             )
             text_pieces: list[str] = []
             for ln in lines:
-                # Each line may carry a nested `spans` array.
+                # 3.4.x: line -> spans[*].content
                 if isinstance(ln, dict):
                     sub = ln.get("spans") or []
                     if sub:
@@ -281,10 +293,11 @@ def _layout_to_chunks(
                                 t = sp.get("content") or sp.get("text") or ""
                                 if t:
                                     text_pieces.append(t)
-                    else:
-                        t = ln.get("content") or ln.get("text") or ""
-                        if t:
-                            text_pieces.append(t)
+                        continue
+                    # Fallback: line itself carries the text
+                    t = ln.get("content") or ln.get("text") or ""
+                    if t:
+                        text_pieces.append(t)
                 else:
                     text_pieces.append(str(ln))
             text = " ".join(p.strip() for p in text_pieces if p.strip())

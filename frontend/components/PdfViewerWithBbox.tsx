@@ -70,6 +70,16 @@ export function PdfViewerWithBbox({
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [numPages, setNumPages] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
+  // Canvas pixel size + the scale used to render it. `bbox` arrives in
+  // PDF user-space (scale = 1), so the overlay MUST multiply by this
+  // scale before placing rectangles, otherwise the highlight drifts
+  // further off the lower/right the more the page is zoomed.
+  const [view, setView] = useState<{
+    page: number;
+    width: number;
+    height: number;
+    scale: number;
+  } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
 
@@ -153,10 +163,19 @@ export function PdfViewerWithBbox({
         // Sync the overlay container to the same size so bbox rectangles
         // align pixel-for-pixel with the rendered page.
         if (overlayRef.current) {
-          overlayRef.current.style.width = `${viewport.width}px`;
-          overlayRef.current.style.height = `${viewport.height}px`;
+          overlayRef.current.style.width = `${canvas.width}px`;
+          overlayRef.current.style.height = `${canvas.height}px`;
         }
         await page.render({ canvasContext: ctx, viewport }).promise;
+        if (cancelled) return;
+        // Publish the rendered size + scale so the overlay can convert
+        // PDF user-space bbox coords into canvas pixels.
+        setView({
+          page: pageNumber,
+          width: canvas.width,
+          height: canvas.height,
+          scale,
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         setError(msg || "PDF 渲染失败");
@@ -290,17 +309,18 @@ export function PdfViewerWithBbox({
                 pointerEvents: "none",
               }}
             >
-              {highlightsOnPage.map((h, idx) =>
-                h.bbox ? (
-                  <PdfBboxOverlay
-                    key={idx}
-                    bbox={h.bbox}
-                    label={h.label}
-                    pageWidth={canvasRef.current?.width || width}
-                    pageHeight={canvasRef.current?.height || width * 1.3}
-                  />
-                ) : null,
-              )}
+              {view?.page === pageNumber &&
+                highlightsOnPage.map((h, idx) =>
+                  h.bbox ? (
+                    <PdfBboxOverlay
+                      key={idx}
+                      bbox={h.bbox}
+                      label={h.label}
+                      scale={view.scale}
+                      pageHeight={view.height}
+                    />
+                  ) : null,
+                )}
             </div>
           </div>
         </>
@@ -323,27 +343,32 @@ const navBtn: React.CSSProperties = {
  * Render one bbox rectangle on top of the rendered PDF page.
  *
  * Coordinate space:
- *   - pdfjs returns bbox in PDF user-space coords (origin at bottom-left,
- *     y axis pointing up).
- *   - our canvas is rendered top-down with origin at top-left.
- *   - so we flip y: `canvasY = pageHeight - pdfY`.
+ *   - the bbox arrives in PDF user-space coords (origin at bottom-left,
+ *     y axis pointing up, scale = 1) — i.e. the raw page units.
+ *   - our canvas is rendered at `scale` and painted top-down with origin
+ *     at top-left.
+ *   - so we first scale every component, then flip y:
+ *     `canvasY = pageHeight - pdfY * scale`.
+ *
+ * Forgetting the `scale` factor is what makes the highlight drift: the
+ * canvas grows with the container while the bbox stays in page units.
  */
 function PdfBboxOverlay({
   bbox,
   label,
-  pageWidth,
+  scale,
   pageHeight,
 }: {
   bbox: [number, number, number, number];
   label?: string;
-  pageWidth: number;
+  scale: number;
   pageHeight: number;
 }) {
   const [x1, y1, x2, y2] = bbox;
-  const left = Math.min(x1, x2);
-  const right = Math.max(x1, x2);
-  const top = pageHeight - Math.max(y1, y2);
-  const height = Math.abs(y2 - y1);
+  const left = Math.min(x1, x2) * scale;
+  const right = Math.max(x1, x2) * scale;
+  const top = pageHeight - Math.max(y1, y2) * scale;
+  const height = Math.abs(y2 - y1) * scale;
   return (
     <div
       style={{

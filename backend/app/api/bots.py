@@ -36,29 +36,44 @@ _UNSET = object()
 
 
 async def _bot_to_out(bot: Bot, session: AsyncSession) -> BotOut:
-    """Build BotOut and populate kb_ids from the bot_kb join table.
+    """Build BotOut and populate kb_ids + kb_public_ids from bot_kb.
 
-    `kb_ids` is a virtual field — there's no `bot.kb_ids` ORM attribute
-    (the association lives in the bot_kb table). This keeps BotOut
-    ergonomic for the frontend (one round-trip, no extra fetch).
+    `kb_ids` / `kb_public_ids` are virtual fields — there's no
+    `bot.kb_ids` ORM attribute (the association lives in the bot_kb
+    table). We keep both: the integer list powers backend joins
+    (e.g. local_retriever uses `kb_id` to filter the HNSW query),
+    the public_id list is what the frontend uses to render
+    `/knowledge/{token}` links.
     """
     out = BotOut.model_validate(bot)
-    rows = await session.execute(
-        select(BotKb.kb_id).where(BotKb.bot_id == bot.id).order_by(BotKb.kb_id)
-    )
-    out.kb_ids = [r[0] for r in rows.all()]
+    rows = (
+        await session.execute(
+            select(BotKb.kb_id, KnowledgeBase.public_id)
+            .join(KnowledgeBase, KnowledgeBase.id == BotKb.kb_id)
+            .where(BotKb.bot_id == bot.id)
+            .order_by(BotKb.kb_id)
+        )
+    ).all()
+    out.kb_ids = [r[0] for r in rows]
+    out.kb_public_ids = [r[1] for r in rows]
     return out
 
 
 async def _resolve_visible_kb(
-    session: AsyncSession, kb_id: int, user: User
+    session: AsyncSession, kb_public_id: str, user: User
 ) -> KnowledgeBase:
     """Visibility for mounting a KB on a bot.
 
-    Mirrors `api.kb._resolve_kb` — admin sees all, scope=system is global,
-    is_public KBs are world-mountable, otherwise owner-only.
+    Resolved via `KnowledgeBase.public_id` (the wire-facing token)
+    instead of the integer pk, so the same string the user clicks in
+    the UI is what the API accepts. Mirrors `api.kb._resolve_kb`:
+    admin sees all, scope=system is global, is_public KBs are
+    world-mountable, otherwise owner-only.
     """
-    kb = await session.get(KnowledgeBase, kb_id)
+    result = await session.execute(
+        select(KnowledgeBase).where(KnowledgeBase.public_id == kb_public_id)
+    )
+    kb = result.scalar_one_or_none()
     if not kb:
         raise HTTPException(status_code=404, detail="knowledge base not found")
     if user.role == "admin" or kb.scope == "system" or kb.is_public:
@@ -91,21 +106,25 @@ async def list_bots(
     bots = list(result.scalars().all())
     if not bots:
         return []
-    # Pre-load every bot's KB ids in a single round-trip (avoids N+1
-    # queries — `_bot_to_out` would otherwise do one select per bot).
+    # Pre-load every bot's KB ids + public_ids in a single round-trip
+    # (avoids N+1 — `_bot_to_out` would otherwise do one select per bot).
     bot_ids = [b.id for b in bots]
     kb_rows = await session.execute(
-        select(BotKb.bot_id, BotKb.kb_id)
+        select(BotKb.bot_id, BotKb.kb_id, KnowledgeBase.public_id)
+        .join(KnowledgeBase, KnowledgeBase.id == BotKb.kb_id)
         .where(BotKb.bot_id.in_(bot_ids))
         .order_by(BotKb.bot_id, BotKb.kb_id)
     )
     by_bot: dict[int, list[int]] = {}
-    for bot_id, kb_id in kb_rows.all():
+    by_bot_pid: dict[int, list[str]] = {}
+    for bot_id, kb_id, public_id in kb_rows.all():
         by_bot.setdefault(bot_id, []).append(kb_id)
+        by_bot_pid.setdefault(bot_id, []).append(public_id)
     out: list[BotOut] = []
     for b in bots:
         o = BotOut.model_validate(b)
         o.kb_ids = by_bot.get(b.id, [])
+        o.kb_public_ids = by_bot_pid.get(b.id, [])
         out.append(o)
     return out
 
@@ -333,24 +352,34 @@ async def update_bot(
         raise HTTPException(
             status_code=403, detail="只有创建者才能切换公开/私有"
         )
-    # kb_ids is a virtual field — handled separately against bot_kb table.
-    kb_ids_payload = data.pop("kb_ids", _UNSET)
+    # kb_public_ids is a virtual field — handled separately against bot_kb table.
+    kb_public_ids_payload = data.pop("kb_public_ids", _UNSET)
+    # Legacy `kb_ids` (integer PK) is still accepted but treated as a
+    # hard error: we don't want stale callers sending ints and silently
+    # matching against the wrong KB. The frontend already migrated.
+    if "kb_ids" in data:
+        raise HTTPException(
+            status_code=400,
+            detail="kb_ids 已弃用，请改用 kb_public_ids（wire-facing token）",
+        )
     for k, v in data.items():
         setattr(bot, k, v)
 
-    kb_diff: dict[str, list[int]] = {}
-    if kb_ids_payload is not _UNSET:
+    kb_diff: dict[str, list[str]] = {}
+    if kb_public_ids_payload is not _UNSET:
         # Verify every KB the user wants to mount is visible to them.
-        new_ids: set[int] = set()
-        for kid in kb_ids_payload:
-            await _resolve_visible_kb(session, kid, user)
-            new_ids.add(int(kid))
+        new_kbs: dict[int, str] = {}  # kb_id -> public_id
+        for kpid in kb_public_ids_payload:
+            kb = await _resolve_visible_kb(session, kpid, user)
+            new_kbs[kb.id] = kb.public_id
         existing_rows = await session.execute(
-            select(BotKb.kb_id).where(BotKb.bot_id == bot.id)
+            select(BotKb.kb_id, KnowledgeBase.public_id)
+            .join(KnowledgeBase, KnowledgeBase.id == BotKb.kb_id)
+            .where(BotKb.bot_id == bot.id)
         )
-        existing_ids = {r[0] for r in existing_rows.all()}
-        to_add = new_ids - existing_ids
-        to_remove = existing_ids - new_ids
+        existing = {r[0]: r[1] for r in existing_rows.all()}
+        to_add = set(new_kbs) - set(existing)
+        to_remove = set(existing) - set(new_kbs)
         # Idempotent insert (PK conflict → no-op). Composite (bot_id, kb_id).
         for kid in to_add:
             session.add(BotKb(bot_id=bot.id, kb_id=kid))
@@ -360,7 +389,10 @@ async def update_bot(
                     BotKb.bot_id == bot.id, BotKb.kb_id.in_(to_remove)
                 )
             )
-        kb_diff = {"added": sorted(to_add), "removed": sorted(to_remove)}
+        kb_diff = {
+            "added": sorted(new_kbs[k] for k in to_add),
+            "removed": sorted(existing[k] for k in to_remove),
+        }
 
     await audit_service.log(
         session,
@@ -370,7 +402,7 @@ async def update_bot(
         target_id=str(bot.id),
         target_name=bot.name,
         detail={
-            "changed": list(data.keys()) + (["kb_ids"] if kb_diff else []),
+            "changed": list(data.keys()) + (["kb_public_ids"] if kb_diff else []),
             "is_public": bot.is_public,
             "kb_diff": kb_diff or None,
         },
