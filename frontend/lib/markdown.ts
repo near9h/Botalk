@@ -155,9 +155,21 @@ md.renderer.rules.autolink_open = function (tokens, idx, options, _env, self) {
 // can't touch the host page. `escapeAttr` is declared below and hoisted.
 const defaultFence = md.renderer.rules.fence;
 
+/**
+ * 围栏内容是否是一份**完整** HTML 文档（而不是拿来举例的片段）。
+ *
+ * 只看开头一小段就够判定：bot 被要求「整合一个完整的 html」时，会从
+ * `<!DOCTYPE html>` 或 `<html ...>` 开头把整份文档塞进围栏。
+ */
+function isFullHtmlDocument(code: string): boolean {
+  const head = code.slice(0, 300).toLowerCase();
+  return head.includes("<!doctype") || head.includes("<html");
+}
+
 md.renderer.rules.fence = function (tokens, idx, options, env, self) {
   const token = tokens[idx];
-  if ((token.info || "").trim() === "echarts-html") {
+  const info = ((token.info || "").trim().split(/\s+/)[0] || "").toLowerCase();
+  if (info === "echarts-html") {
     const srcdoc = escapeAttr(token.content);
     return (
       '<div class="chart-frame">' +
@@ -166,6 +178,35 @@ md.renderer.rules.fence = function (tokens, idx, options, env, self) {
       'srcdoc="' + srcdoc + '"></iframe>' +
       "</div>"
     );
+  }
+  // 完整 HTML 文档渲成沙箱 iframe。`html:false` 会把围栏内容整段转义，用户看到
+  // 的是一堆源码 —— 但他明确要的就是这份文档本身，所以要真渲染出来。只认
+  // 「完整文档」，拿 HTML 片段举例的围栏仍按代码块显示，避免把示例也渲掉。
+  //
+  // `sandbox="allow-scripts"` 与上面的图表 iframe 保持一致：不给
+  // `allow-same-origin`，iframe 拿到的是**不透明源**，里面的脚本读不到宿主页面的
+  // DOM / Cookie / localStorage，也做不了顶层跳转。内容用 escapeAttr 转义后放进
+  // srcdoc，不会逃出属性值。
+  //
+  // 另外挂一个「查看 HTML 源码」折叠区：内容被渲染成文档后，用户仍需要一条把
+  // 原始 HTML 拿出去的路径（复制走再另存为 .html）。
+  if (info === "html" || info === "htm" || info === "") {
+    if (isFullHtmlDocument(token.content)) {
+      const srcdoc = escapeAttr(token.content);
+      return (
+        '<div class="doc-frame">' +
+        '<iframe sandbox="allow-scripts" loading="lazy" title="HTML 文档" ' +
+        'style="width:100%;height:600px;border:1px solid var(--border);border-radius:12px;background:#fff;" ' +
+        'srcdoc="' + srcdoc + '"></iframe>' +
+        '<details style="margin-top:8px">' +
+        '<summary style="cursor:pointer;font-size:12px;color:var(--fg-subtle)">查看 HTML 源码</summary>' +
+        '<pre style="margin:8px 0 0;padding:10px;max-height:320px;overflow:auto;' +
+        'background:var(--surface-2);border-radius:8px;font-size:12px">' +
+        '<code>' + escapeHtml(token.content) + "</code>" +
+        "</pre></details>" +
+        "</div>"
+      );
+    }
   }
   if (defaultFence) return defaultFence(tokens, idx, options, env, self);
   return self.renderToken(tokens, idx, options);

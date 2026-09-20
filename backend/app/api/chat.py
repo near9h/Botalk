@@ -12,7 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.auth import require_user
 from app.config import get_settings
-from app.db.models import Attachment, BotSkill, Group, Run, User  # noqa: F811
+from app.db.models import Attachment, Bot, BotSkill, Group, Message, Run, User  # noqa: F811
 from app.db.session import get_session
 from app.orchestrator.msghub import run_group_discussion
 from app.orchestrator.runner import (
@@ -31,9 +31,60 @@ settings = get_settings()
 
 _MENTION_RE = re.compile(r"@([\w一-鿿]+)")
 
+# 同一 task 前情回灌的预算：条数 + 字符数双上限。一次 HTML/报表类回复就能有
+# 几千字符，只按条数限制挡不住上下文膨胀，所以两个上限都要有。
+_HISTORY_MAX_MESSAGES = 20
+_HISTORY_MAX_CHARS = 6000
+
 
 def _extract_mentions(prompt: str) -> list[str]:
     return _MENTION_RE.findall(prompt)
+
+
+async def _load_prior_history(session: AsyncSession, run_id: int) -> list[dict[str, str]]:
+    """取同一 task 里已有的消息，作为新一问的前情。
+
+    同一 task 的多轮追问复用同一个 run（前端带 task_token），但每次调用
+    `run_group_discussion` 都是一张白纸 —— 用户先要「整合一个完整的 html」、
+    紧接着追问「html呢」，如果只看得到「html呢」，各 bot 只能集体答非所问。
+
+    从最近一条往回收集，用完条数或字符预算为止，再翻回正序：越近的轮次越
+    重要，预算不够时优先保留它们。
+    """
+    rows = (
+        await session.execute(
+            select(Message, Bot.name)
+            .outerjoin(Bot, Bot.id == Message.bot_id)
+            .where(Message.run_id == run_id)
+            .order_by(Message.id.desc())
+            .limit(_HISTORY_MAX_MESSAGES)
+        )
+    ).all()
+    picked: list[dict[str, str]] = []
+    used = 0
+    for msg, bot_name in rows:
+        content = (msg.content or "").strip()
+        if not content:
+            continue
+        # 已经收到东西了才允许因超预算而停，否则单条超长消息会被整条丢掉。
+        if picked and used + len(content) > _HISTORY_MAX_CHARS:
+            break
+        if msg.role == "user":
+            picked.append({"role": "user", "content": content})
+        else:
+            # 库里存的是 "bot"；`_generate_agent` 只认 user/assistant，其余角色
+            # 会被静默丢弃，所以这里统一映射，并带上发言人名字（它会把名字
+            # 拼回 `[name] ...`，让模型能分辨不同 bot 的声音）。
+            picked.append(
+                {
+                    "role": "assistant",
+                    "name": bot_name or "助手",
+                    "content": content,
+                }
+            )
+        used += len(content)
+    picked.reverse()
+    return picked
 
 
 async def _visible_group_check(session: AsyncSession, user: User, group: Group) -> bool:
@@ -141,6 +192,9 @@ async def stream_chat(
         },
     )
     await session.commit()
+    # 先把同 task 的历史取出来，再写本次提问 —— 顺序反了就会把刚存进去的这一句
+    # 也算成「前情」，模型会看到自己的问题重复一遍。新 task 这里自然是空列表。
+    prior_history = await _load_prior_history(session, run.id)
     # Persist the user turn immediately so /api/messages returns it on
     # page refresh. Before this, `run_start` only existed in the SSE
     # stream — refreshing the page dropped the user's prompt from view
@@ -199,6 +253,7 @@ async def stream_chat(
                 skills_by_bot=skills_by_bot,
                 group_id=group_id_int,
                 policy_block=policy_block,
+                prior_history=prior_history,
             ):
                 # Persist every user/bot message into chat so the
                 # history list shows attachments the bot produced

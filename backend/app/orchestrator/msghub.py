@@ -343,6 +343,33 @@ async def _generate_agent(
         + "\n\n[协作] 如果你需要本群内某个成员配合/质疑/补充/接手，请在回复中用 @角色名 提及，例如「@项目经理 你那边排期 OK 吗」。被 @ 的成员会在下一轮优先发言。**不要 @ 不在群成员列表里的角色** —— 那种 @ 不会有任何效果。"
     )
 
+    # 产出「可下载文档」的请求要路由到「专业写文档」。直接让业务 bot 写整份
+    # HTML/Word 的人话产物，会被 max_tokens 截断（实测 1024 字符左右就砍掉了，
+    # 输出 2197 / 407 字符的残片 HTML，body 都闭合不了）。这条规则让所有核保类
+    # bot 在被问到整合方案时礼貌让位，避免各自写半截 HTML。
+    if user_prompt and any(kw in user_prompt for kw in (
+        "整合一个完整的 html", "完整的html", "整合html", "整合 html",
+        "整合一个完整的 docx", "完整的docx", "整合docx", "整合 docx",
+        "整合建议书", "整合方案", "整合报告", "整合word", "整合 word",
+        "输出报告", "生成报告", "出一份",
+    )):
+        writer = next(
+            (b for b in (group_members or []) if b.name == "专业写文档"), None
+        )
+        if writer is not None:
+            system_content += (
+                "\n\n[产出路由] 用户的当前诉求是产出「可下载 HTML/Word 文档」。"
+                "这类产物由本群的「专业写文档」(@{name}) 负责生成完整的 HTML+docx"
+                "附件卡片；你自己没有挂「写文档」技能，硬塞整份 HTML 到聊天里会被"
+                "截断成残片。因此你**必须**在回复里：\n"
+                "  1) 简述你对该方案的核心结论（2-3 句话即可，不要再贴任何 ```html 围栏或 JSON schema）；\n"
+                "  2) 在末尾 @专业写文档 并明确交代输入要素（例如「基于上面三轮核保意见与外部信息官"
+                "搜集的最新信息，整合成完整 HTML+docx 提案书」），由它在下一轮生成附件卡片。\n"
+                "**不要**自己写 ```html 或 [FILE:...] 长文档块 —— 交给专业写文档。".format(
+                    name=writer.name
+                )
+            )
+
     # Append knowledge-skill instructions + template assets so the model
     # actually follows them (e.g. the document writer's template structure).
     if skills:
@@ -506,17 +533,38 @@ async def _generate_agent(
     # full reply before yielding, switching to the non-streaming OpenAI
     # call removes one whole buffering layer and the UX stays the same
     # (bot bubble appears with the full reply at once).
+    # KB-grounded bots need a generous output budget: the model
+    # often summarizes 3-5 chunks into a structured answer and
+    # previously hit the 512 cap mid-sentence. 2048 keeps room for
+    # citation markers + an occasional quoted clause from a chunk; we
+    # still truncate hard at 4096 for doc-skill bots that emit full
+    # reports.
+    #
+    # 2026-09-20: 把默认上限从 1024 提到 2048。MiniMax-M3 在 1024 上回
+    # 吐「整合一个完整的 html」请求时，断在 `<style>` CSS 中间且不带
+    # 闭合（2205 / 407 字符），造成 iframe 渲染出空白页。
+    # 同时检测用户的 deliverable 请求：它在 prompt 模板里会被劝去
+    # @专业写文档，但有时模型还是会尝试硬塞整份 HTML。给这种 bot 一个
+    # 临时 8192 token 的余地，免得触发「模型撞墙输出残片」的退化。
+    user_wants_html_doc = bool(user_prompt) and any(
+        kw in user_prompt for kw in (
+            "整合一个完整的 html", "完整的html", "整合html", "整合 html",
+            "整合一个完整的 docx", "完整的docx", "整合docx", "整合 docx",
+            "整合建议书", "整合方案", "整合报告", "整合word", "整合 word",
+            "输出报告", "生成报告", "出一份",
+        )
+    )
+    if (has_doc_skill or structured_doc_skill):
+        max_tokens = 4096
+    elif user_wants_html_doc:
+        max_tokens = 8192
+    else:
+        max_tokens = 2048
     params: dict = {
         "model": bot.model,
         "messages": messages,
         "temperature": float(bot.temperature),
-        # KB-grounded bots need a generous output budget: the model
-        # often summarizes 3-5 chunks into a structured answer and
-        # previously hit the 512 cap mid-sentence. 1024 keeps room
-        # for citation markers without ballooning latency; we still
-        # truncate hard at 4096 for doc-skill bots that emit full
-        # reports.
-        "max_tokens": 4096 if (has_doc_skill or structured_doc_skill) else 1024,
+        "max_tokens": max_tokens,
         "stream": False,
     }
     # Pass-through any user-specified OpenAI params (top_p, frequency_penalty, …).
@@ -638,6 +686,24 @@ async def _generate_agent(
             logging.getLogger(__name__).warning(
                 "citation alignment failed for bot %s: %s", bot.id, exc
             )
+    # 调一次 finish_reason：区分「撞 max_tokens」与「模型主动刹车」。前者要把
+    # 那一类的 max_tokens 提上去；后者多半是 prompt 给了「短回复」硬约束，模型在
+    # 自觉遵守 —— 两条修法完全不同。命中 length 时打 WARNING（这种回复会被前
+    # 端截断渲染成残片，是用户可见的退化）。
+    try:
+        finish_reason = getattr(getattr(resp, "choices", [None])[0], "finish_reason", None)
+        if finish_reason == "length":
+            logging.getLogger(__name__).warning(
+                "bot %s reply truncated by max_tokens (chars=%d)",
+                bot.id, len(text),
+            )
+        else:
+            logging.getLogger(__name__).debug(
+                "bot %s reply finish_reason=%s chars=%d",
+                bot.id, finish_reason, len(text),
+            )
+    except Exception:
+        pass
     return text, cited_refs
 
 
@@ -655,6 +721,7 @@ async def run_group_discussion(
     skills_by_bot: dict[int, list[dict[str, Any]]] | None = None,
     group_id: int | None = None,
     policy_block: str | None = None,
+    prior_history: list[dict[str, str]] | None = None,
 ) -> AsyncIterator[OrchestratorEvent]:
     """Drive a group chat discussion round by round and stream events.
 
@@ -665,6 +732,10 @@ async def run_group_discussion(
     `policy_block` is the pre-rendered platform «群规» (+ this group's notice)
     text from `app.services.policy.build_policy_block`. The caller computes it
     **once per request** so every bot and every round sees the identical text.
+
+    `prior_history` is the already-trimmed transcript of earlier turns in the
+    **same task** (`[{"role": "user"|"assistant", "name": ..., "content": ...}]`).
+    The caller loads and budgets it; we only splice it in front of this turn.
     """
     if not bots:
         yield OrchestratorEvent(type="run_end", error="group has no bots")
@@ -687,7 +758,13 @@ async def run_group_discussion(
         effective_prompt = (
             f"{user_prompt}\n\n---\n【附件内容(MinerU 解析)】\n{truncated}"
         )
-    history: list[dict[str, str]] = [{"role": "user", "content": effective_prompt}]
+    # 同一 task 的历史轮次先铺进来，再接本次提问。追问会复用同一个 run，不回灌
+    # 的话模型只看得到孤零零的这一句：用户先要「整合一个完整的 html」、再追问
+    # 「html呢」，各 bot 集体回「HTML 不属于我的领域」，就是缺了这段前情。
+    # 裁剪与预算由调用方负责（见 api/chat._load_prior_history）。
+    seeded = len(prior_history or [])
+    history: list[dict[str, str]] = list(prior_history or [])
+    history.append({"role": "user", "content": effective_prompt})
     yield OrchestratorEvent(type="run_start", content=user_prompt, role="user", created_at=_now_iso())
 
     early_stop_markers = (
@@ -867,7 +944,9 @@ async def run_group_discussion(
 
     # ── Final pass: synthesized summary by a virtual "Summarizer" role ──
     # Skipped for very short discussions (≤ 2 bot turns) where summary is noise.
-    bot_turns = [h for h in history if h.get("role") == "assistant"]
+    # 只看**本次** run 的发言：带上历史种子的话，一是会把上一轮的内容也总结进去，
+    # 二是「≥2 条 bot 发言」这个门槛会被历史立刻满足，每问一句都多出一条总结。
+    bot_turns = [h for h in history[seeded:] if h.get("role") == "assistant"]
     if bot_turns and len(bot_turns) >= 2:
         yield OrchestratorEvent(
             type="message_start",
