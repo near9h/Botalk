@@ -168,6 +168,12 @@ async def list_bots(
 class GeneratePersonaRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     hint: str | None = Field(default=None, max_length=500)
+    # 用户预期的人设输出语言：`"auto"`（默认，启发式从 name+hint 判定）、
+    # `"zh"` 强制中文、`"en"` 强制英文。前端表单可让用户切换。
+    language: str | None = Field(
+        default=None,
+        description='期望的人设输出语言：auto|zh|en。auto 时按名字与提示启发式判定。',
+    )
 
 
 class GeneratePersonaResponse(BaseModel):
@@ -176,28 +182,50 @@ class GeneratePersonaResponse(BaseModel):
     latency_ms: int
 
 
-def _persona_prompt(name: str, hint: str | None) -> list[dict[str, str]]:
+def _persona_prompt(name: str, hint: str | None, lang: str) -> list[dict[str, str]]:
     """Build a small chat prompt that asks the model to write a system persona.
 
-    We ask for ~200 Chinese characters covering: role, expertise, tone, and
-    how they should respond in a multi-bot group chat. Output goes straight
-    into the bot's `persona` column.
+    输出直接落到 `bots.persona`，所以语种必须与期望回复一致 —— 不然后续
+    群聊里 bot 会用 persona 的语种答而不是用户的语种。`lang` 来自
+    `GeneratePersonaRequest.language`：`"zh"` / `"en"` 强制；`"auto"` /
+    空字符串时按 `name + hint` 启发式判定（见
+    `app.services.language_detect.detect_response_language`）。
     """
     extra = f"\n用户补充要求：{hint.strip()}" if hint and hint.strip() else ""
-    system = (
-        "你是一名资深 Prompt 工程师，擅长为多角色群聊场景编写简洁、有辨识度的中文人设。"
-        "请严格按要求输出，不要使用 markdown 代码块、不要使用项目符号、不要解释。"
-    )
-    user = (
-        f"请为名为「{name.strip()}」的 AI 角色写一段中文 system prompt（人设），"
-        "约 200 字，3 段：\n"
-        "1) 身份与专业背景（30-60 字）\n"
-        "2) 表达风格与沟通偏好（60-100 字）\n"
-        "3) 在群聊中被 @ 时的回应方式与边界（60-80 字）\n"
-        "语气需符合名字暗示的定位；不要重复名字本身；"
-        "不要使用 '你是一位...' 之类的元描述开头。"
-        f"{extra}"
-    )
+    if lang == "en":
+        system = (
+            "You are a senior prompt engineer who writes concise, distinctive "
+            "system personas for multi-character group chat. Strictly follow "
+            "the requirements: no markdown code blocks, no bullet points, no "
+            "meta-explanations."
+        )
+        user = (
+            f"Write a system prompt (persona) of about 200 words in English "
+            f"for an AI character named 「{name.strip()}」, in 3 paragraphs:\n"
+            "1) Identity & domain expertise (30-60 words)\n"
+            "2) Tone & communication style (60-100 words)\n"
+            "3) How it should respond when @-mentioned in a group chat, "
+            "including its scope boundaries (60-80 words)\n"
+            "The tone must suit the character implied by the name; do not "
+            "repeat the name itself; do not start with 'You are a...' style "
+            "meta-description."
+            f"{extra}"
+        )
+    else:
+        system = (
+            "你是一名资深 Prompt 工程师，擅长为多角色群聊场景编写简洁、有辨识度的中文人设。"
+            "请严格按要求输出，不要使用 markdown 代码块、不要使用项目符号、不要解释。"
+        )
+        user = (
+            f"请为名为「{name.strip()}」的 AI 角色写一段中文 system prompt（人设），"
+            "约 200 字，3 段：\n"
+            "1) 身份与专业背景（30-60 字）\n"
+            "2) 表达风格与沟通偏好（60-100 字）\n"
+            "3) 在群聊中被 @ 时的回应方式与边界（60-80 字）\n"
+            "语气需符合名字暗示的定位；不要重复名字本身；"
+            "不要使用 '你是一位...' 之类的元描述开头。"
+            f"{extra}"
+        )
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -234,11 +262,17 @@ async def generate_persona(
     }
     payload = {
         "model": model,
-        "messages": _persona_prompt(body.name, body.hint),
         "temperature": 0.8,
         "max_tokens": 600,
         "stream": False,
     }
+    # 解析期望的语种：`"zh"` / `"en"` 走强约束；其它（None / "auto" / 空串）
+    # 视为自动，从 name + hint 启发式判定。
+    lang = (body.language or "").lower()
+    if lang not in ("zh", "en"):
+        from app.services.language_detect import detect_response_language
+        lang = detect_response_language(f"{body.name}\n{body.hint or ''}")
+    payload["messages"] = _persona_prompt(body.name, body.hint, lang)
     started = time.time()
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:

@@ -510,7 +510,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  generatePersona: (body: { name: string; hint?: string }) =>
+  generatePersona: (
+    body: { name: string; hint?: string; language?: "auto" | "zh" | "en" },
+  ) =>
     request<GeneratePersonaResult>("/api/bots/generate-persona", {
       method: "POST",
       body: JSON.stringify(body),

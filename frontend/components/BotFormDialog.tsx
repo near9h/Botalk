@@ -249,7 +249,12 @@ export function BotFormDialog({ open, onOpenChange, initial, onSaved }: Props) {
     }
     setGenerating(true);
     try {
-      const res = await api.generatePersona({ name: cleanName });
+      const res = await api.generatePersona({
+        name: cleanName,
+        // auto 让后端启发式从 name + hint 决定人设语种：
+        // 中文名 → 中文人设；英文名 → 英文人设。
+        language: "auto",
+      });
       setPersona(res.persona);
       toast.push({
         title: "已生成默认人设",

@@ -30,6 +30,7 @@ from app.config import get_settings
 from app.db.models import Bot
 from app.orchestrator.bots import client_for
 from app.services import rag_retriever
+from app.services.language_detect import detect_response_language
 from app.skills.resolve import build_system_context, build_tool_schemas, ensure_tools_cached, run_tool_call
 from app.tools.report_schema import PAYLOAD_SCHEMA_DESCRIPTION
 
@@ -332,11 +333,20 @@ async def _generate_agent(
             roster_lines.append(f"  - @{m.name} ({m.name})")
     roster_text = "\n".join(roster_lines) if roster_lines else "  (无其他成员)"
 
+    # 注入「回复语言」指令。bot 的 persona 是中文时，若用户发英文却没
+    # 这条指令，模型会继续用中文答。检测 user_prompt 的字符占比（成本为 0），
+    # 把答案固定下来：CJK 占 ≥ 30% 用 zh，否则 en。这条放在 persona 之后、
+    # [格式约束] 之前，权重够高又不至于压过格式约束。
+    resp_lang = detect_response_language(user_prompt)
+    lang_directive_zh = "[回复语言] **必须**用简体中文回复整条答复与所有要点；不要混用英文（专有名词、模型名、命令、URL 例外）。"
+    lang_directive_en = "[Reply language] You **must** reply in English for the entire response, including bullet points, table headers, and final recommendations. Do not switch to Chinese unless quoting a source term verbatim."
+
     system_content = (
         # 平台群规永远是 system prompt 的首段，优先级高于 persona 与一切
         # 用户指令。空规则时 `policy_block` 为 None，此处完全不注入。
         ((policy_block + "\n\n") if policy_block else "")
         + persona
+        + (("\n\n" + lang_directive_zh) if resp_lang == "zh" else ("\n\n" + lang_directive_en))
         + "\n\n[格式约束] 用 Markdown 排版：1) 标题用 ## 二级、### 三级；2) 多条要点用 - 列表；3) 重点用 **加粗**；4) 代码用 ``` 包裹；5) 单次回复严格控制在 200 字以内，先结论后理由，不寒暄不重复他人。"
         + "\n\n[群成员] 本群当前有如下机器人（只能 @ 这些名字，超出列表的 @ 不会被识别、无效）：\n"
         + roster_text
