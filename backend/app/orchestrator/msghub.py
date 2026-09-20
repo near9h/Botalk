@@ -1047,6 +1047,10 @@ async def _summarize(
     `policy_block` (when present) is prepended to the summary's own system
     prompt so the generated 纪要 also obeys the platform «群规» — the summary
     is user-visible output, so it must not be the one place rules are ignored.
+
+    回复语种与用户输入语种保持一致 —— 不然中文 bot 在英文群里答中文，
+    最后一段中文纪要就破坏了整轮对话的语种一致性（之前已对每个
+    bot turn 做过语种跟随；纪要是最后一段，不能漏）。
     """
     transcript_lines: list[str] = []
     for h in bot_turns:
@@ -1057,17 +1061,37 @@ async def _summarize(
         transcript_lines.append(f"[{name}] {content}")
     transcript = "\n\n".join(transcript_lines)
 
-    system = (
-        ((policy_block + "\n\n") if policy_block else "")
-        + "你是一位资深会议纪要官。请基于下方多角色讨论记录，输出结构化 Markdown 总结。"
-        "要求："
-        "1) 先写一句 TL;DR（结论先行，50 字以内）；"
-        "2) 用 ## 共识、## 分歧、## 行动项 三段式（无内容可写'无'）；"
-        "3) 每个行动项写明建议负责人角色；"
-        "4) 严格 200 字以内；"
-        "5) 用中文。"
-    )
-    user = f"【用户问题】\n{user_prompt}\n\n【讨论记录】\n{transcript}"
+    # 复用与 bot turn 同样的启发式（见 services/language_detect）。
+    # 之所以不传 `user_prompt` 整个：里面包含附件 Markdown、@提及、群规
+    # 之外的「多话」片段，对语种判定的信号被稀释。`user_prompt` 是
+    # original user text，足够代表用户意图。
+    resp_lang = detect_response_language(user_prompt)
+    if resp_lang == "zh":
+        system = (
+            ((policy_block + "\n\n") if policy_block else "")
+            + "你是一位资深会议纪要官。请基于下方多角色讨论记录，输出结构化 Markdown 总结。"
+            "要求："
+            "1) 先写一句 TL;DR（结论先行，50 字以内）；"
+            "2) 用 ## 共识、## 分歧、## 行动项 三段式（无内容可写'无'）；"
+            "3) 每个行动项写明建议负责人角色；"
+            "4) 严格 200 字以内；"
+            "5) **必须用简体中文**回复整条纪要（包括标题与行动项条目）。"
+        )
+    else:
+        system = (
+            ((policy_block + "\n\n") if policy_block else "")
+            + "You are a senior meeting minute-taker. Based on the multi-role "
+            "discussion below, output a structured Markdown summary."
+            "Requirements:"
+            "1) Lead with a TL;DR (≤50 words, conclusions first);"
+            "2) Use three sections: ## Consensus, ## Disagreements, ## Action Items "
+            "(write 'None' for empty sections);"
+            "3) Each action item must specify a suggested owner role;"
+            "4) Stay under 200 words;"
+            "5) **Reply entirely in English** for the entire summary, including "
+            "section headers and action items."
+        )
+    user = f"【用户问题 / User question】\n{user_prompt}\n\n【讨论记录 / Discussion transcript】\n{transcript}"
     params = {
         "model": model,
         "messages": [

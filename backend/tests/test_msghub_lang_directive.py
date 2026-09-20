@@ -97,6 +97,77 @@ def test_short_latin_burst_does_not_flip_to_english():
     assert "[回复语言]" in sys_msg
 
 
+# ──────────────────────────── _summarize 同样的语种跟随 ────────────────────────────
+
+
+class _StubMsg:
+    content = "（stub）"
+
+
+class _StubChoice:
+    message = _StubMsg()
+
+
+class _StubChoices:
+    def __getitem__(self, i):
+        return _StubChoice()
+
+    def __iter__(self):
+        return iter([_StubChoice()])
+
+
+class _StubResp:
+    choices = _StubChoices()
+
+
+class _CompletionsStub:
+    def __init__(self, holder):
+        self._h = holder
+
+    async def create(self, **kwargs):
+        for m in kwargs.get("messages", []):
+            if m.get("role") == "system":
+                self._h["system"] = m["content"]
+                break
+        return _StubResp()
+
+
+class _ChatStub:
+    def __init__(self, holder):
+        self.completions = _CompletionsStub(holder)
+
+
+class _ClientStub:
+    def __init__(self):
+        self._h: dict = {}
+        self.chat = _ChatStub(self._h)
+
+
+async def _capture_summarize_system(user_prompt: str) -> str:
+    client = _ClientStub()
+    bot_turns = [{"role": "assistant", "name": "测试bot", "content": "已收到。"}]
+    await msghub._summarize(client, user_prompt, bot_turns, model="MiniMax-M3")
+    return client._h.get("system", "")
+
+
+def test_summarize_zh_prompt_keeps_zh_template():
+    sys_msg = asyncio.run(_capture_summarize_system(
+        "请基于上面几位的意见，整合一份财产险方案"
+    ))
+    assert "会议纪要官" in sys_msg, sys_msg
+    assert "## 共识" in sys_msg
+    assert "[回复语言]" not in sys_msg  # 不是注入 bot prompt 的标签
+
+
+def test_summarize_en_prompt_yields_en_template():
+    sys_msg = asyncio.run(_capture_summarize_system(
+        "Could you summarize the discussion into a 3-section memo?"
+    ))
+    assert "meeting minute-taker" in sys_msg, sys_msg
+    assert "## Consensus" in sys_msg
+    assert "## Action Items" in sys_msg
+
+
 # ──────────────────────────── 自跑入口 ────────────────────────────
 
 
