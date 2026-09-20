@@ -1,22 +1,30 @@
 "use client";
 
 /**
- * Stage 4: Citation chip UI + drawer for the PDF.js viewer.
+ * Stage 4: Citation chip UI + preview modal for the PDF.js viewer.
  *
  * Two pieces:
- *   - <CitationChip ref={…} onOpen={…} /> renders a single clickable
- *     chip used both inline (in the bot answer, via the markdown
- *     pipeline) and as the footer entry in <CitedRefsFooter />.
- *   - <CitationDrawer ref={…} onClose={…} /> opens the PdfViewerWithBbox
- *     in a side drawer so the chat scroll position is preserved.
+ *   - <CitationChip citedRef={…} onOpen={…} /> renders a single
+ *     clickable chip used both inline (in the bot answer, via the
+ *     markdown pipeline) and as the footer entry in <CitedRefsFooter />.
+ *   - <CitationPreviewModal citedRef={…} onClose={…} /> opens the
+ *     PdfViewerWithBbox in a centered popup so the user gets the
+ *     highlighted page without leaving the conversation.
  *
  * The chip is the only "always-visible" surface — clicking it dispatches
  * a fetch to GET /api/kb/{kb_id}/chunks/{chunk_id} for the chunk's
- * bbox payload, then opens the drawer with the highlighted page.
+ * bbox payload, then opens the modal with the highlighted page.
  *
- * Why a drawer (not a modal): the user is mid-conversation; killing
- * the scroll position every time they peek at a citation is annoying.
- * The drawer is a 480px side panel anchored to the right edge.
+ * IMPORTANT — why the prop is named `citedRef` and NOT `ref`:
+ * `ref` is a reserved prop in React. `createElement` / the jsx runtime
+ * lifts `ref` out of props before the component ever sees them, so a
+ * plain function component that destructures `{ ref }` from its props
+ * always gets `undefined`. The previous revision used
+ * `<CitationDrawer ref={openRef} … />`, which made the drawer bail out
+ * on its `if (!ref) return null` guard every single time — clicking a
+ * citation updated the context state but rendered nothing (and, because
+ * React only warns about this in dev builds, it failed silently in
+ * production). Keep the name `citedRef`.
  */
 import { useEffect, useState } from "react";
 import type { CitedRef } from "@/lib/api";
@@ -30,8 +38,8 @@ export type CitationChipProps = {
   // path (orchestrator → SSE → frontend) occasionally emits a
   // null entry when a chunk lookup happens before the assistant JSON
   // is fully parsed; rendering must remain robust.
-  ref: CitedRef | null | undefined;
-  onOpen: (ref: CitedRef) => void;
+  citedRef: CitedRef | null | undefined;
+  onOpen: (citedRef: CitedRef) => void;
 };
 
 /**
@@ -39,13 +47,13 @@ export type CitationChipProps = {
  * a footer entry. Color = accent (purple) so the user can distinguish
  * a citation from a plain mention or attachment.
  */
-export function CitationChip({ ref, onOpen }: CitationChipProps) {
-  const label = shortLabel(ref);
-  const title = ref?.snippet || ref?.citation_key || label;
+export function CitationChip({ citedRef, onOpen }: CitationChipProps) {
+  const label = shortLabel(citedRef);
+  const title = citedRef?.snippet || citedRef?.citation_key || label;
   // Nullish ref → render a non-interactive "未知来源" pill. We don't
   // want to throw `Cannot read properties of undefined` here because
   // the chat page is already scrolled past the bubble.
-  if (!ref) {
+  if (!citedRef) {
     return (
       <span
         aria-disabled="true"
@@ -73,7 +81,7 @@ export function CitationChip({ ref, onOpen }: CitationChipProps) {
       type="button"
       onClick={(e) => {
         e.stopPropagation();
-        onOpen(ref);
+        onOpen(citedRef);
       }}
       title={title}
       style={{
@@ -109,72 +117,74 @@ export function CitationChip({ ref, onOpen }: CitationChipProps) {
 }
 
 /**
- * Right-side drawer that hosts the PDF.js viewer for one citation.
+ * Centered popup that hosts the PDF.js viewer for one citation.
  *
  * Lazy fetch: we only call GET /api/kb/{kb_id}/chunks/{chunk_id} when
- * the drawer mounts. The chunk row carries the bbox_json and the
+ * the modal opens. The chunk row carries the bbox_json and the
  * attachment_id, but the *file bytes* are served by the existing
  * /api/attachments/{public_id}/download endpoint — except KB attachments
  * aren't chat attachments (group_id NULL), so we have to fetch the
- * public_id via a dedicated KB-doc endpoint. To keep this Stage 4 commit
- * self-contained, we derive the URL from kb_doc_id and call a sibling
- * endpoint the KB API will host. If the fetch fails (e.g. RAGFlow down
- * and no local file), we still render the chip metadata so the user
- * sees the snippet + page number, just without a live PDF preview.
+ * public_id via the KB-doc endpoint first. If the fetch fails (e.g. no
+ * local file), we still render the chip metadata so the user sees the
+ * snippet + page number, just without a live PDF preview.
  */
-export function CitationDrawer({
-  ref,
+export function CitationPreviewModal({
+  citedRef,
   onClose,
 }: {
-  ref: CitedRef | null;
+  citedRef: CitedRef | null;
   onClose: () => void;
 }) {
   const [pdfSrc, setPdfSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   // Esc closes it. Only bind while open so other Esc handlers (modal
-  // dialogs elsewhere on the page) keep working when the drawer is
+  // dialogs elsewhere on the page) keep working when the modal is
   // closed.
   useEffect(() => {
-    if (!ref) return;
+    if (!citedRef) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [ref, onClose]);
+  }, [citedRef, onClose]);
 
   useEffect(() => {
-    if (!ref) {
+    if (!citedRef) {
       setPdfSrc(null);
       setError(null);
+      setLoading(false);
       return;
     }
     let cancelled = false;
     setError(null);
     setPdfSrc(null);
+    setLoading(true);
     (async () => {
       try {
         // Fetch the chunk row so we have the bbox (the SSE payload
         // already carries bbox, but we re-fetch to honor any post-
         // retrieval chunk updates — and to be robust against partial
         // payloads).
-        const chunk = await api.getKbChunk(ref.kb_id, ref.chunk_id);
+        const chunk = await api.getKbChunk(citedRef.kb_id, citedRef.chunk_id);
         if (cancelled) return;
         // The chunk row alone doesn't carry the attachment's public_id;
         // we need to round-trip through the document endpoint to get a
-        // downloadable URL. Stage 2 wired up the listing + single-doc
-        // endpoint which carries the public_id via /api/kb/{id}/docs.
-        const doc = await api.getKbDocument(ref.kb_id, ref.kb_doc_id);
+        // downloadable URL.
+        const doc = await api.getKbDocument(citedRef.kb_id, citedRef.kb_doc_id);
         if (cancelled) return;
         // Reuse the same path the regular chat uses — KB attachments
         // are served through /api/attachments/{public_id}/download.
         // We *must* use the wire-facing public_id (unguessable token),
-        // not the integer pk — the download endpoint refuses the int
-        // id since the public_id migration.
+        // not the integer pk.
         if (!doc.public_id) {
           setError(`该文档缺少 public_id，无法在线预览`);
-        } else if (doc.mime_type?.includes("pdf") || /\.pdf$/i.test(doc.filename)) {
+        } else if (
+          doc.mime_type?.includes("pdf") ||
+          /\.pdf$/i.test(doc.filename)
+        ) {
           setPdfSrc(`/api/attachments/${doc.public_id}/download`);
         } else {
           setError(
@@ -189,61 +199,69 @@ export function CitationDrawer({
           const msg = e instanceof Error ? e.message : String(e);
           setError(msg);
         }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [ref]);
+  }, [citedRef]);
 
-  if (!ref) return null;
+  if (!citedRef) return null;
 
-  const highlights: PdfHighlight[] = ref.bbox
-    ? [{ page: ref.page || 1, bbox: ref.bbox, label: ref.citation_key }]
-    : ref.page
-      ? [{ page: ref.page, bbox: null, label: ref.citation_key }]
+  const highlights: PdfHighlight[] = citedRef.bbox
+    ? [{ page: citedRef.page || 1, bbox: citedRef.bbox, label: citedRef.citation_key }]
+    : citedRef.page
+      ? [{ page: citedRef.page, bbox: null, label: citedRef.citation_key }]
       : [];
 
   return (
-    <>
-      {/* Backdrop; clicking it closes the drawer without consuming the click. */}
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`引用预览：${citedRef.filename || ""}`}
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 200,
+        background: "rgba(15, 23, 42, 0.45)",
+        backdropFilter: "blur(6px)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+    >
       <div
-        onClick={onClose}
+        onClick={(e) => e.stopPropagation()}
+        className="glass-strong animate-scale-in"
         style={{
-          position: "fixed",
-          inset: 0,
-          background: "rgba(15, 23, 42, 0.18)",
-          zIndex: 99,
-        }}
-      />
-      <aside
-        style={{
-          position: "fixed",
-          top: 0,
-          right: 0,
-          bottom: 0,
-          width: "min(560px, 90vw)",
-          background: "var(--surface)",
-          boxShadow: "-8px 0 24px rgba(15, 23, 42, 0.18)",
-          zIndex: 100,
+          width: "min(900px, 100%)",
+          maxHeight: "calc(100vh - 48px)",
+          overflowY: "auto",
+          background: "var(--surface-solid)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          boxShadow: "var(--shadow-lg)",
           padding: 18,
           display: "flex",
           flexDirection: "column",
           gap: 12,
-          overflowY: "auto",
         }}
       >
         <div
           style={{
             display: "flex",
-            alignItems: "center",
+            alignItems: "flex-start",
             justifyContent: "space-between",
             gap: 12,
           }}
         >
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>
-              📄 {ref.filename}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, wordBreak: "break-word" }}>
+              📄 {citedRef.filename}
             </div>
             <div
               style={{
@@ -252,15 +270,15 @@ export function CitationDrawer({
                 marginTop: 2,
               }}
             >
-              {ref.page ? `第 ${ref.page} 页` : "整篇"}
-              {ref.para != null ? ` · 段落 ${ref.para}` : ""}
-              {ref.score ? ` · 相似度 ${(ref.score * 100).toFixed(1)}%` : ""}
+              {citedRef.page ? `第 ${citedRef.page} 页` : "整篇"}
+              {citedRef.para != null ? ` · 段落 ${citedRef.para}` : ""}
+              {citedRef.score ? ` · 相似度 ${(citedRef.score * 100).toFixed(1)}%` : ""}
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="关闭引用面板"
+            aria-label="关闭引用预览"
             style={{
               border: "1px solid var(--border)",
               background: "var(--surface-2)",
@@ -269,13 +287,14 @@ export function CitationDrawer({
               height: 32,
               cursor: "pointer",
               fontSize: 14,
+              flexShrink: 0,
             }}
           >
             ✕
           </button>
         </div>
 
-        {ref.snippet && (
+        {citedRef.snippet && (
           <div
             style={{
               padding: 12,
@@ -286,9 +305,17 @@ export function CitationDrawer({
               lineHeight: 1.6,
               color: "var(--fg)",
               whiteSpace: "pre-wrap",
+              maxHeight: 180,
+              overflowY: "auto",
             }}
           >
-            {ref.snippet}
+            {citedRef.snippet}
+          </div>
+        )}
+
+        {loading && (
+          <div style={{ fontSize: 12, color: "var(--fg-subtle)" }}>
+            正在加载原文…
           </div>
         )}
 
@@ -311,11 +338,11 @@ export function CitationDrawer({
             src={pdfSrc}
             highlights={highlights}
             title="原文定位"
-            width={520}
+            width={840}
           />
         )}
-      </aside>
-    </>
+      </div>
+    </div>
   );
 }
 
@@ -328,11 +355,11 @@ export function CitationDrawer({
  * 'citation_key')` at render time. Fall through to the filename or
  * a generic placeholder so the bubble still renders.
  */
-function shortLabel(ref: CitedRef | undefined | null): string {
-  if (!ref) return "未知来源";
+function shortLabel(citedRef: CitedRef | undefined | null): string {
+  if (!citedRef) return "未知来源";
   // citation_key looks like `<filename> p.X ¶Y`. We strip the extension
   // off the filename so the chip stays compact.
-  const key = ref.citation_key || ref.filename || "未知来源";
+  const key = citedRef.citation_key || citedRef.filename || "未知来源";
   if (!key) return "未知来源";
   const m = key.match(/^(.+?)\s+p\.(\d+)\s+¶(\d+)/);
   if (m) {
@@ -343,15 +370,17 @@ function shortLabel(ref: CitedRef | undefined | null): string {
 }
 
 /**
- * Single chat-scoped drawer that listens to CitationDrawerContext.
+ * Single chat-scoped modal that listens to CitationDrawerContext.
  * Render exactly one of these inside `<CitationDrawerProvider>`,
  * somewhere outside the message list (typically right before
  * `</PageShell>`). All ChatBubble instances in the same provider
  * share this surface — clicking any chip anywhere in the chat opens
- * the same drawer.
+ * the same popup.
  */
 import { useCitationDrawer } from "./CitationDrawerContext";
-export function CitationDrawerSurface() {
+export function CitationPreviewSurface() {
   const { openRef, closeCitation } = useCitationDrawer();
-  return <CitationDrawer ref={openRef} onClose={closeCitation} />;
+  // NOTE: the prop is `citedRef`, not `ref` — see the file header for
+  // why a prop literally named `ref` never reaches the component.
+  return <CitationPreviewModal citedRef={openRef} onClose={closeCitation} />;
 }

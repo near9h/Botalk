@@ -31,7 +31,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -288,19 +288,30 @@ async def _store_chunks(kb_doc_id: int, chunks: list[MinedChunk]) -> None:
         )
         for row in existing.scalars().all():
             await session.delete(row)
+        # 用 Core insert 而不是 `session.add(KbChunk(...))`：`KbChunk.embedding`
+        # 在 ORM 里映射成 `Text`，实际列却是 pgvector 的 `vector(2048)`，而 ORM
+        # 会把所有「未赋值且可空」的列也写进 INSERT（值为 NULL），于是 asyncpg
+        # 生成 `NULL::VARCHAR`，Postgres 直接报
+        # `DatatypeMismatchError: column "embedding" is of type vector but
+        # expression is of type character varying`。
+        # Core insert 只发送显式列出的字段，embedding 完全不进语句；向量随后由
+        # `local_retriever.embed_chunks_for_doc` 用带 `::vector` 的裸 SQL 回填。
+        rows: list[dict[str, Any]] = []
         for c in chunks:
             text = (c.text or "").strip()[:4000]
-            session.add(
-                KbChunk(
-                    kb_doc_id=kb_doc_id,
-                    ragflow_chunk_id=None,  # local path doesn't use this
-                    page=c.page,
-                    para=c.block_id,
-                    bbox_json=c.bbox or None,
-                    text=text,
-                    snippet=text[:200],
-                )
+            rows.append(
+                {
+                    "kb_doc_id": kb_doc_id,
+                    "ragflow_chunk_id": None,  # local path doesn't use this
+                    "page": c.page,
+                    "para": c.block_id,
+                    "bbox_json": c.bbox or None,
+                    "text": text,
+                    "snippet": text[:200],
+                }
             )
+        if rows:
+            await session.execute(insert(KbChunk), rows)
         await session.commit()
 
 

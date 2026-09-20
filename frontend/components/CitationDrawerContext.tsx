@@ -16,7 +16,7 @@
  *
  * `useCitationDrawer()` is the consumer hook. Chat pages wrap their
  * subtree in `<CitationDrawerProvider>` once and render one
- * `<CitationDrawerSurface />` at the end.
+ * `<CitationPreviewSurface />` at the end.
  */
 import { createContext, ReactNode, useCallback, useContext, useMemo, useState } from "react";
 import type { CitedRef } from "@/lib/api";

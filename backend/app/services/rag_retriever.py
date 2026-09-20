@@ -168,11 +168,17 @@ def _format_context_block(chunks: list[RetrievedChunk]) -> str:
     """
     if not chunks:
         return ""
+    # Numbered references make the `[N]` marker pattern trivial for
+    # the LLM to follow. We render the snippets under numbered labels
+    # and then teach the model to drop a `[N]` (or `[doc: <key>]`)
+    # after each cited fact.
     lines = [
-        "【知识库参考】（请在回答中使用 [doc: filename p.X ¶Y] 标注每条引用；"
-        "若参考资料与问题无关，回答“暂未找到相关资料”）",
+        "【知识库参考】以下是相关资料，可使用编号引用（例如 [1] 或 [doc: <key>]）"
+        "标注每条引用的事实/条款/数据。若与问题无关，回答「暂未找到相关资料」。",
+        "规则：每条具体条款、数字、年限、流程步骤 **后** 紧跟一个 [N] 标记（不要改写/翻译 key）。",
+        "",
     ]
-    for c in chunks:
+    for idx, c in enumerate(chunks, start=1):
         snippet = c.snippet.replace("\n", " ").strip()
-        lines.append(f"[doc: {c.citation_key}] {snippet}")
+        lines.append(f"[{idx}] [doc: {c.citation_key}] {snippet}")
     return "\n".join(lines)

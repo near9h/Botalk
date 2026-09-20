@@ -509,7 +509,13 @@ async def _generate_agent(
         "model": bot.model,
         "messages": messages,
         "temperature": float(bot.temperature),
-        "max_tokens": 4096 if (has_doc_skill or structured_doc_skill) else 512,
+        # KB-grounded bots need a generous output budget: the model
+        # often summarizes 3-5 chunks into a structured answer and
+        # previously hit the 512 cap mid-sentence. 1024 keeps room
+        # for citation markers without ballooning latency; we still
+        # truncate hard at 4096 for doc-skill bots that emit full
+        # reports.
+        "max_tokens": 4096 if (has_doc_skill or structured_doc_skill) else 1024,
         "stream": False,
     }
     # Pass-through any user-specified OpenAI params (top_p, frequency_penalty, …).
@@ -615,7 +621,22 @@ async def _generate_agent(
         resp = await client.chat.completions.create(**params)
         msg = resp.choices[0].message
 
-    return _message_text(msg), cited_refs
+    # Posthoc substring-match citation injection. The LLM is *asked*
+    # to write `[doc: …]` markers in the prompt, but in practice it
+    # often paraphrases or forgets. The inject_markers pass below
+    # scans the LLM reply for verbatim chunks (and falls back to a
+    # 15-char overlap match for paraphrased content), then inserts
+    # `[doc: <key>]` markers at the next sentence boundary after each
+    # hit. It runs **only** when the LLM didn't already write enough
+    # markers itself — if the model does its job, we trust it.
+    text = _message_text(msg)
+    if cited_refs and text and not structured_doc_skill:
+        try:
+            from app.services.citation_aligner import inject_markers
+            text = inject_markers(text, cited_refs, [])
+        except Exception as exc:  # noqa: BLE001
+            print(f"[msghub] citation alignment failed: {exc}")
+    return text, cited_refs
 
 
 # ─────────────────────────── public runner ───────────────────────────

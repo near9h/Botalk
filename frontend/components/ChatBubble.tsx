@@ -6,7 +6,6 @@ import { Bot, CitedRef } from "@/lib/api";
 import { cacheAttachments, renderMessageWithMentions } from "@/lib/markdown";
 import { useI18n } from "@/lib/i18n";
 import { AttachmentPreviewDrawer } from "./AttachmentPreviewDrawer";
-import { CitationDrawer, CitationDrawerSurface } from "./SourceCitation";
 import { useCitationDrawer } from "./CitationDrawerContext";
 import { CitedRefsFooter } from "./CitedRefsFooter";
 

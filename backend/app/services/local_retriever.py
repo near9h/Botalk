@@ -297,6 +297,12 @@ async def retrieve(
                 "snippet": r["snippet"],
                 "document_name": r["filename"],
                 "score": sim,
+                # Mirror `rag_retriever._format_citation` so the chat UI's
+                # `[doc: …]` regex can resolve to the chunk. Without
+                # this key the LLM-echoed markers fall through to the
+                # orphan branch (`<sup>?</sup>`) and become
+                # non-clickable.
+                "citation_key": f"{r['filename']} p.{r['page'] or '?'} ¶{r['para'] or '?'}",
             }
         )
 

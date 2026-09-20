@@ -8,10 +8,14 @@ Flow (batch-mode, server-side upload):
   4. Download the zip, unzip, read `full.md`.
 
 For the KB ingest pipeline we also read `layout.json` from the same
-zip — MinerU emits one block per page with `bbox` (x1, y1, x2, y2 in
-PDF user-space coords) and `page_number`. We use that to populate
-`kb_chunks.bbox_json` so the chat UI can highlight the original PDF
-when a citation fires.
+zip — MinerU emits one block per page with `bbox` (x1, y1, x2, y2,
+**origin at the page's top-left corner, y axis pointing down**) and
+`page_number`. We use that to populate `kb_chunks.bbox_json` so the
+chat UI can highlight the original PDF when a citation fires.
+
+Note the origin: pdf.js `getViewport({scale: 1})` uses the same
+top-left/down convention, so the frontend viewer only needs to
+multiply by its render scale — it must NOT flip y.
 """
 from __future__ import annotations
 

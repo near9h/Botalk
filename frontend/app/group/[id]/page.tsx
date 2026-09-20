@@ -25,7 +25,7 @@ import { Composer } from "@/components/Composer";
 import { GroupWizard } from "@/components/GroupWizard";
 import { CitationDrawerProvider } from "@/components/CitationDrawerContext";
 import { useCitationDrawer } from "@/components/CitationDrawerContext";
-import { CitationDrawerSurface } from "@/components/SourceCitation";
+import { CitationPreviewSurface } from "@/components/SourceCitation";
 import { api, Attachment, AttachmentMeta, Bot, CitedRef, Group, GroupPolicy, Message, Run, Task, User, streamChat, vendorLabel, vendorOfModelId } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 
@@ -82,8 +82,6 @@ function MessagesList({
       const target = t0?.closest(".citation");
       if (!target) return;
       const cid = Number(target.getAttribute("data-citation-chunk-id"));
-      // eslint-disable-next-line no-console
-      console.log("[citation click]", { cid, hasRef: citedByChunk.has(cid), bbox: target.getAttribute("data-citation-key") });
       if (!Number.isFinite(cid)) return;
       const ref = citedByChunk.get(cid);
       if (ref) openCitation(ref);
@@ -1472,10 +1470,10 @@ export default function GroupPage({ params }: { params: { id: string } }) {
           </div>
         )}
       </div>
-      {/* Stage 4 fix: a single drawer surface shared by every ChatBubble
-          in the chat. Rendered inside the chat page so the drawer
+      {/* Stage 4 fix: a single preview popup shared by every ChatBubble
+          in the chat. Rendered inside the chat page so the popup
           overlays both the sidebar and the conversation panel. */}
-      <CitationDrawerSurface />
+      <CitationPreviewSurface />
     </div>
     </CitationDrawerProvider>
   );

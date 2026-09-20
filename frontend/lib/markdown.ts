@@ -186,13 +186,18 @@ import { Bot } from "./api";
 // up to the boundary at the first delimiter char).
 const MENTION_PATTERN = /@([一-鿿\w][一-鿿\w·\-\d]{0,23})/g;
 
-// Match RAG citation tokens `[doc: filename p.X ¶Y]` (the format the
-// orchestrator injects into the LLM prompt via `[doc: ...]` markers).
-// We are deliberately permissive on the filename (CJK + spaces, since
-// the bot may echo back filenames with parens / dashes / CJK) and on
-// the page / paragraph numbers (`X` and `Y` are digits or `?`). The
-// closing `]` is required so trailing prose doesn't get swallowed.
+// Match RAG citation tokens. We accept two shapes the LLM may emit:
+//   `[doc: filename p.X ¶Y]` — the canonical filename-form marker
+//   `[1]`, `[2]`, …                       — short numbered reference
+// The chat prompt now lists chunks under numbered labels (`[1]`,
+// `[2]`, …) so most LLMs prefer the short form. We resolve both to the
+// same chunk via a single Map keyed by `citation_key` (for the long
+// form) and a separate ordinal→chunk map (for the short form).
 const CITATION_PATTERN = /\[doc:\s([^\]]+)\]/g;
+// `[N]` references: 1-3 digit number. We deliberately *don't* match
+// `[2025]` (year-style) — the rule requires a tight boundary. The
+// `\s*` allows LLM-emitting formats like `[1 ]` / `[1] `.
+const CITATION_SHORT_PATTERN = /\[(\d{1,3})\]/g;
 
 // Index `cited_refs` by their pre-formatted `citation_key` so we can
 // resolve `[doc: ...]` markers back to chunk_ids without re-parsing the
@@ -228,6 +233,22 @@ export function renderMessageWithMentions(
 
   // Citation lookup table — see CITATION_PATTERN above.
   const citationIndex = buildCitationIndex(cited_refs);
+  // LLM-echoed citation keys sometimes drift from the prompt's exact
+  // formatting (extra spaces, full-width vs half-width `¶`, etc.). Build
+  // a whitespace-stripped secondary index so `[doc: foo.pdf p.3 ¶1]`
+  // still resolves when the LLM emits `[doc: foo.pdf  p.3 ¶ 1 ]`.
+  const citationIndexNoSpace = new Map<string, CitedRef>();
+  for (const [k, v] of citationIndex.entries()) {
+    citationIndexNoSpace.set(k.replace(/\s+/g, ""), v);
+  }
+  // Numbered ordinal → chunk. We assign in the order chunks appear in
+  // `cited_refs`, which matches the numbering the prompt template
+  // emits (`[1]`, `[2]`, …). If `cited_refs` is empty the map is also
+  // empty and `[N]` markers fall through to the orphan branch.
+  const chunksByOrdinal: CitedRef[] = [];
+  for (const r of cited_refs ?? []) {
+    if (r && typeof r.chunk_id === "number") chunksByOrdinal.push(r);
+  }
 
   // Strip a leading `[name] ` speaker prefix (added by the orchestrator
   // so other bots can tell voices apart in their prompt). Only at the
@@ -279,7 +300,10 @@ export function renderMessageWithMentions(
   const ordinalByKey = new Map<number, number>();
   const withCitations = withPlaceholders.replace(CITATION_PATTERN, (full, rawKey) => {
     const key = String(rawKey).trim();
-    const ref = citationIndex.get(key);
+    // Primary: exact key match. Fallback: strip all whitespace so the
+    // LLM's reformatting (extra spaces, line wraps in code blocks, etc.)
+    // doesn't drop the citation to the non-clickable `?` orphan branch.
+    const ref = citationIndex.get(key) ?? citationIndexNoSpace.get(key.replace(/\s+/g, ""));
     const idx = placeholders.length;
     if (ref) {
       // Stable ordinal per unique chunk: same chunk_id in the same
@@ -306,13 +330,38 @@ export function renderMessageWithMentions(
   // substitute them back as raw HTML *after* parsing.
   let html = md.render(withCitations);
 
-  // Substitute placeholders back. markdown-it escaped `@@MENTION_N@@` to
-  // text content; we need to put raw HTML back in. We do a literal string
-  // replace (the placeholder sequence is unique per render).
+  // Substitute `[doc: …]` placeholders back as raw HTML.
   html = html.replace(/@@MENTION_(\d+)@@/g, (_match, n) => {
     const idx = Number(n);
     return placeholders[idx] ?? "";
   });
+
+  // Second pass: handle the short `[N]` numbered form. The current
+  // prompt encourages the LLM to write `[1] [2] …` after each cited
+  // fact. These tokens survive markdown rendering as text (markdig's
+  // linkify would otherwise turn `[1]` into a reference link, but
+  // without a matching reference definition it stays as plain text —
+  // which is what we want). We do a fresh placeholder round so we can
+  // keep the markdig-unsafe `<sup>` injection off the markdown pipeline.
+  if (chunksByOrdinal.length > 0) {
+    const shortPlaceholders: string[] = [];
+    html = html.replace(CITATION_SHORT_PATTERN, (full, rawN) => {
+      const n = Number(rawN);
+      if (!Number.isFinite(n) || n < 1 || n > chunksByOrdinal.length) {
+        return full; // leave non-citation `[12]` alone
+      }
+      const ref = chunksByOrdinal[n - 1];
+      const idx = shortPlaceholders.length;
+      shortPlaceholders.push(
+        `<sup class="citation" data-citation-chunk-id="${ref.chunk_id}" data-citation-kb-id="${ref.kb_id}" data-citation-doc-id="${ref.kb_doc_id}" data-citation-key="${escapeAttr(ref.citation_key)}" title="${escapeAttr(ref.snippet || ref.citation_key)}">[${n}]</sup>`,
+      );
+      return `@@SHORT_${idx}@@`;
+    });
+    html = html.replace(/@@SHORT_(\d+)@@/g, (_m, i) => {
+      const idx = Number(i);
+      return shortPlaceholders[idx] ?? "";
+    });
+  }
 
   return html;
 }

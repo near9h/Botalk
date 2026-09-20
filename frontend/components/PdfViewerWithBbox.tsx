@@ -30,7 +30,9 @@ import { useEffect, useRef, useState } from "react";
 export type PdfHighlight = {
   /** 1-indexed page number (matches backend `kb_chunks.page`). */
   page: number;
-  /** [x1, y1, x2, y2] in PDF user-space coordinates (origin bottom-left). */
+  /** [x1, y1, x2, y2] — 左上角原点、y 轴向下的页面坐标（单位与
+   *  pdf.js `getViewport({scale:1})` 一致，即 PDF point）。MinerU 的
+   *  `layout.json` 就是这个坐标系，后端原样落到 `kb_chunks.bbox_json`。 */
   bbox: [number, number, number, number] | null;
   /** Optional chip label rendered in the overlay corner. */
   label?: string;
@@ -317,7 +319,6 @@ export function PdfViewerWithBbox({
                       bbox={h.bbox}
                       label={h.label}
                       scale={view.scale}
-                      pageHeight={view.height}
                     />
                   ) : null,
                 )}
@@ -343,31 +344,30 @@ const navBtn: React.CSSProperties = {
  * Render one bbox rectangle on top of the rendered PDF page.
  *
  * Coordinate space:
- *   - the bbox arrives in PDF user-space coords (origin at bottom-left,
- *     y axis pointing up, scale = 1) — i.e. the raw page units.
- *   - our canvas is rendered at `scale` and painted top-down with origin
- *     at top-left.
- *   - so we first scale every component, then flip y:
- *     `canvasY = pageHeight - pdfY * scale`.
- *
- * Forgetting the `scale` factor is what makes the highlight drift: the
- * canvas grows with the container while the bbox stays in page units.
+ *   - the bbox is stored by MinerU / the backend in a **top-left origin,
+ *     y-axis-pointing-down** page coordinate system (the same units
+ *     pdf.js `getViewport({scale: 1})` reports, i.e. PDF points).
+ *   - our canvas is painted top-down with origin at top-left as well,
+ *     just at `scale` times the page size.
+ *   - so the only transform needed is `x * scale` / `y * scale` — no
+ *     y-flip. Earlier revisions assumed a bottom-left origin and did
+ *     `pageHeight - y * scale`, which mirrored the highlight about the
+ *     page's horizontal centre (a p.11 ¶8 citation landed on the
+ *     Article-39 block instead of Article 41).
  */
 function PdfBboxOverlay({
   bbox,
   label,
   scale,
-  pageHeight,
 }: {
   bbox: [number, number, number, number];
   label?: string;
   scale: number;
-  pageHeight: number;
 }) {
   const [x1, y1, x2, y2] = bbox;
   const left = Math.min(x1, x2) * scale;
-  const right = Math.max(x1, x2) * scale;
-  const top = pageHeight - Math.max(y1, y2) * scale;
+  const width = Math.abs(x2 - x1) * scale;
+  const top = Math.min(y1, y2) * scale;
   const height = Math.abs(y2 - y1) * scale;
   return (
     <div
@@ -375,7 +375,7 @@ function PdfBboxOverlay({
         position: "absolute",
         left,
         top,
-        width: right - left,
+        width,
         height,
         background: "rgba(250, 204, 21, 0.30)",
         border: "2px solid rgba(217, 119, 6, 0.85)",
