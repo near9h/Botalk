@@ -37,10 +37,10 @@
 | 角色 | 看哪里 |
 | --- | --- |
 | 项目经理（PMP） | 01 charter → 02 PM plan → 10 closure |
-| 架构师 | 04 架构 → adr/ |
+| 架构师 | 04 架构（[system-architecture.md](04-architecture/system-architecture.md) / [middleware-inventory.md](04-architecture/middleware-inventory.md) / [data-flow.md](04-architecture/data-flow.md)）→ adr/ |
 | 开发 | 05 详细设计 → 06 实现记录 → 各自模块 README |
 | 测试 | 07 testing → 09 smoke-test |
-| 运维（接手） | 09 operations（5 份手册） → 08 deployment |
+| 运维（接手） | 09 operations（5 份手册） → 08 deployment → 04 [middleware-inventory.md](04-architecture/middleware-inventory.md) |
 | 安全审计 | 07 testing / security-audit-report.md → 09 user-mgmt-audit-log.md |
 | 业务方 | 03 需求 → 10 closure |
 

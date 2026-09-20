@@ -38,6 +38,9 @@
 
 | 子系统 | 入口 | 文档 |
 | --- | --- | --- |
+| **整体架构图** | — | [system-architecture.md](system-architecture.md) |
+| **中间件清单** | — | [middleware-inventory.md](middleware-inventory.md) |
+| **信息流向** | — | [data-flow.md](data-flow.md) |
 | **编排引擎（Orchestrator）** | `backend/app/orchestrator/msghub.py` | [adr/0002-orchestrator-choice.md](../adr/0002-orchestrator-choice.md) |
 | **RAG 三件套** | `backend/app/services/rag_retriever.py` + `local_retriever.py` | [rag-design.md](rag-design.md) / [hybrid-bm25-rag.md](hybrid-bm25-rag.md) |
 | **句窗上下文** | `backend/app/services/sentence_window.py` | [sentence-window-context.md](sentence-window-context.md) |
