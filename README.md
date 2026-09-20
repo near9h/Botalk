@@ -4,7 +4,7 @@
 
 调用层对接你已部署的 **NewAPI**（OpenAI 兼容协议），系统本身不接各家厂商。
 
-这个项目做出来就是为了验证一下AI 底层得基建和应用得结合，也希望更多得人提出一些意见，不断优化
+这个项目做出来就是为了验证一下AI 底层基建和应用的结合，也希望更多得人提出一些意见，不断优化
 
 
 <img width="2256" height="1251" alt="image" src="https://github.com/user-attachments/assets/06091722-bdb2-41fb-a7b9-86d5d0c53152" />
