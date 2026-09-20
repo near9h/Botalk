@@ -163,9 +163,15 @@ export default function AuditAdminPage() {
     api.me().then(setMe).catch(() => {});
   }, []);
 
+  // Only fire the audit fetch once we know we're admin. Otherwise
+  // a non-admin visitor gets a stream of 401s in the console (the
+  // backend rejects /api/audit/* for the `user` role). The "无权限"
+  // empty state below renders for the same case.
   useEffect(() => {
-    load();
-  }, [load]);
+    if (me?.role === "admin") {
+      load();
+    }
+  }, [load, me?.role]);
 
   if (me && me.role !== "admin") {
     return (

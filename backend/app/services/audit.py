@@ -44,12 +44,32 @@ async def audit_ctx(
     注意：匿名路由（auth.login 等）也用这个依赖；user 为 None 时
     safe_actor() 仍然能给出 (None, '', 'anonymous')。
     """
-    # client.host 在 nginx 反代场景下取到的是反代 IP；前端代理在 fastapi
-    # 已默认按 `X-Forwarded-For` 处理。生产部署仍建议在 nginx 里
-    # `proxy_set_header X-Real-IP $remote_addr;` + `proxy_pass_request_headers on;`
-    ip = request.client.host if request.client else ""
+    ip = client_ip(request)
     ua = request.headers.get("user-agent", "")[:500]
     return AuditContext(actor=user, ip=ip, user_agent=ua)
+
+
+def client_ip(request: Request) -> str:
+    """取真实客户端 IP。
+
+    请求都经由 nginx 反代，`request.client.host` 拿到的是反代容器的
+    内网地址（如 172.19.0.5），不是访客 IP。nginx 侧已用 PROXY
+    protocol + real_ip 模块把 `$remote_addr` 还原成真实客户端，因此
+    它注入的这两个头可信：
+
+    - `X-Real-IP`：nginx 无条件覆盖为 `$remote_addr`，客户端伪造无效；
+    - `X-Forwarded-For`：`$proxy_add_x_forwarded_for` 会保留客户端自带
+      的值再追加一跳，所以只有**最右侧**那一跳可信。
+
+    直连（未过反代，如本地脚本）时两个头都没有，回退到 TCP 对端。
+    """
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[-1].strip()
+    return request.client.host if request.client else ""
 
 
 async def log(
