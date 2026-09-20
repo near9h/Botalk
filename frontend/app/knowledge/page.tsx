@@ -42,14 +42,20 @@ export default function KnowledgePage() {
   const [isPublic, setIsPublic] = useState(false);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  // Rename dialog state. We keep a copy of the KB being edited so the
-  // title bar can show the *old* name while the user types a new one;
-  // `renamingId` doubles as the "is open" signal to avoid a parallel
-  // boolean.
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameName, setRenameName] = useState("");
-  const [renameSaving, setRenameSaving] = useState(false);
-  const [renameError, setRenameError] = useState<string>("");
+  // Edit-info dialog state. Holds a snapshot of the KB being edited
+  // so the title bar can show the *old* name while the user types a
+  // new one; `editingId` doubles as the "is open" signal to avoid a
+  // parallel boolean. The dialog edits `name`, `description`, and
+  // `is_public` in one go (the backend `KbUpdate` schema has all three
+  // as optional fields).
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({
+    name: "",
+    description: "",
+    is_public: false,
+  });
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string>("");
 
   const refresh = async () => {
     setLoading(true);
@@ -118,40 +124,51 @@ export default function KnowledgePage() {
     }
   };
 
-  const startRename = (kb: KnowledgeBase) => {
-    setRenamingId(kb.public_id);
-    setRenameName(kb.name);
-    setRenameError("");
+  const startEdit = (kb: KnowledgeBase) => {
+    setEditingId(kb.public_id);
+    setEditForm({
+      name: kb.name,
+      description: kb.description || "",
+      is_public: !!kb.is_public,
+    });
+    setEditError("");
   };
 
-  const cancelRename = () => {
-    setRenamingId(null);
-    setRenameName("");
-    setRenameError("");
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditForm({ name: "", description: "", is_public: false });
+    setEditError("");
   };
 
-  const submitRename = async () => {
-    if (!renamingId) return;
-    const cleanName = renameName.trim();
+  const submitEdit = async () => {
+    if (!editingId) return;
+    const cleanName = editForm.name.trim();
     if (!cleanName) {
-      setRenameError("名称不能为空");
+      setEditError("名称不能为空");
       return;
     }
-    setRenameSaving(true);
+    setEditSaving(true);
     try {
-      const updated = await api.updateKb(renamingId, { name: cleanName });
+      // Send every field — backend `KbUpdate` is partial so unset
+      // fields stay as-is, but typing the form means we *always*
+      // know the user's intent. Cleaner than diffing.
+      const updated = await api.updateKb(editingId, {
+        name: cleanName,
+        description: editForm.description.trim(),
+        is_public: editForm.is_public,
+      });
       toast.push({
-        title: "已重命名",
-        description: `知识库已更新为「${updated.name}」`,
+        title: "已保存",
+        description: `知识库「${updated.name}」已更新`,
         variant: "success",
       });
-      cancelRename();
+      cancelEdit();
       await refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setRenameError(msg);
+      setEditError(msg);
     } finally {
-      setRenameSaving(false);
+      setEditSaving(false);
     }
   };
 
@@ -300,7 +317,7 @@ export default function KnowledgePage() {
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        startRename(k);
+                        startEdit(k);
                       }}
                       style={{
                         padding: "4px 10px",
@@ -311,9 +328,9 @@ export default function KnowledgePage() {
                         fontSize: 11,
                         color: "var(--fg)",
                       }}
-                      title="重命名知识库"
+                      title="修改知识库名称、描述、可见性"
                     >
-                      重命名
+                      编辑
                     </button>
                     <button
                       type="button"
@@ -437,16 +454,16 @@ export default function KnowledgePage() {
       </Dialog>
 
       <Dialog
-        open={renamingId !== null}
+        open={editingId !== null}
         onOpenChange={(open) => {
-          if (!open) cancelRename();
+          if (!open) cancelEdit();
         }}
       >
         <DialogContent>
           <DialogHeader
-            title="重命名知识库"
-            description="修改后所有挂载的机器人会立即看到新名字。"
-            onClose={cancelRename}
+            title="编辑知识库"
+            description="修改名称、描述、可见性。改动对所有挂载的机器人立即生效。"
+            onClose={cancelEdit}
           />
           <div
             style={{
@@ -459,37 +476,84 @@ export default function KnowledgePage() {
             <div>
               <Label>名称</Label>
               <Input
-                value={renameName}
-                onChange={(e) => setRenameName(e.target.value)}
-                placeholder="新名称"
+                value={editForm.name}
+                onChange={(e) =>
+                  setEditForm({ ...editForm, name: e.target.value })
+                }
+                placeholder="如：财务报销制度 / 项目模板"
                 maxLength={128}
                 autoFocus
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !renameSaving) {
+                  if (e.key === "Enter" && !editSaving) {
                     e.preventDefault();
-                    void submitRename();
+                    void submitEdit();
                   }
                 }}
               />
-              {renameError && (
+            </div>
+            <div>
+              <Label>描述（可选）</Label>
+              <Textarea
+                rows={3}
+                value={editForm.description}
+                onChange={(e) =>
+                  setEditForm({ ...editForm, description: e.target.value })
+                }
+                placeholder="让协作者知道这个知识库装的是什么"
+                maxLength={512}
+              />
+            </div>
+            <label
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "flex-start",
+                padding: 10,
+                borderRadius: "var(--radius-sm)",
+                border: "1px solid var(--border)",
+                cursor: "pointer",
+                background: editForm.is_public
+                  ? "rgba(34, 197, 94, 0.06)"
+                  : "var(--surface-2)",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={editForm.is_public}
+                onChange={(e) =>
+                  setEditForm({ ...editForm, is_public: e.target.checked })
+                }
+                style={{ marginTop: 3 }}
+              />
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>
+                  🌍 公开给所有用户挂载
+                </div>
                 <div
                   style={{
-                    color: "var(--danger)",
-                    fontSize: 12,
-                    marginTop: 4,
+                    fontSize: 11,
+                    color: "var(--fg-muted)",
+                    lineHeight: 1.5,
+                    marginTop: 2,
                   }}
                 >
-                  {renameError}
+                  其它用户可以在他们的机器人上挂载这个知识库；
+                  但只有你（创建者）和管理员能修改或删除。
                 </div>
-              )}
-            </div>
+              </div>
+            </label>
+            {editError && (
+              <div style={{ color: "var(--danger)", fontSize: 12 }}>
+                {editError}
+              </div>
+            )}
           </div>
           <DialogFooter>
-            <Button variant="secondary" onClick={cancelRename}>
+            <Button variant="secondary" onClick={cancelEdit}>
               取消
             </Button>
-            <Button onClick={submitRename} disabled={renameSaving}>
-              {renameSaving ? "保存中…" : "保存"}
+            <Button onClick={submitEdit} disabled={editSaving}>
+              {editSaving ? "保存中…" : "保存"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -333,7 +333,15 @@ export function PdfViewerWithBbox({
                     <PdfBboxOverlay
                       key={idx}
                       bbox={h.bbox}
-                      label={h.label}
+                      // Don't render the chip label on top of the bbox —
+                      // it overlaps the surrounding source text in
+                      // awkward ways (the label is `nowrap` so its
+                      // width runs past the bbox, and `top: -N`
+                      // collisions with the line above). The drawer's
+                      // own header already shows `第 X / Y 页 · 1 处
+                      // 高亮` so users have enough orientation without
+                      // a per-bbox label.
+                      label={undefined}
                       scale={view.scale}
                     />
                   ) : null,
@@ -401,23 +409,10 @@ function PdfBboxOverlay({
       }}
       data-pdf-bbox
     >
-      {label && (
-        <span
-          style={{
-            position: "absolute",
-            top: -22,
-            left: 0,
-            background: "rgba(217, 119, 6, 0.95)",
-            color: "white",
-            padding: "2px 8px",
-            borderRadius: 6,
-            fontSize: 11,
-            whiteSpace: "nowrap",
-          }}
-        >
-          {label}
-        </span>
-      )}
+      {/* Per-bbox label is intentionally not rendered — see
+          <PdfBboxOverlay> call site in the parent for the rationale.
+          The drawer header already shows the page number and the
+          count of highlights on the current page. */}
     </div>
   );
 }
