@@ -53,7 +53,7 @@ def client_ip(request: Request) -> str:
     """取真实客户端 IP。
 
     请求都经由 nginx 反代，`request.client.host` 拿到的是反代容器的
-    内网地址（如 172.19.0.5），不是访客 IP。nginx 侧已用 PROXY
+    内网地址（例：`<nginx-container-ip>`），不是访客 IP。nginx 侧已用 PROXY
     protocol + real_ip 模块把 `$remote_addr` 还原成真实客户端，因此
     它注入的这两个头可信：
 
@@ -151,7 +151,7 @@ async def list_logs(
         if val is not None:
             q = q.where(col == val)
             count_q = count_q.where(col == val)
-    # IP 模糊匹配：用户只输入一段也能命中（如 172.19 / 172.19.0.5）
+    # IP 模糊匹配：用户只输入一段也能命中（如 `<ip-prefix>` / `<ip-full>`）
     if ip:
         like = f"%{ip.strip()}%"
         q = q.where(AuditLog.ip.ilike(like))

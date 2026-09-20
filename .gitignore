@@ -4,6 +4,10 @@ __pycache__/
 .venv/
 .env
 .env.local
+.env.production
+.env.development
+.env.*.local
+postgres-data/
 node_modules/
 .next/
 data/
